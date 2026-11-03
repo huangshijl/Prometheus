@@ -232,18 +232,25 @@ try {
 	const guestrun = [
 		"#!/system/bin/sh",
 		'if [ ! -x "$PROMETHEUS_ROOTFS/usr/bin/env" ]; then echo "runtime not installed: open Settings > Runtimes" >&2; exit 127; fi',
-		'CA=""',
-		'[ -n "$PROMETHEUS_CACERT" ] && CA="-b $PROMETHEUS_CACERT:/etc/ssl/certs/ca-certificates.crt"',
+		// PRoot arguments are built in an array: a bare `-b $PWD` splits at spaces in the workspace path ("My Projects").
+		'OPTS=()',
+		'OPTS+=("--link2symlink" "-0" "-r" "$PROMETHEUS_ROOTFS" "-b" "/dev" "-b" "/proc" "-b" "/sys")',
 		// DNS: the rootfs only knew public resolvers, so names on the phone's own LAN (router DNS, *.lan, NAS hostnames) never resolved.
 		// Put the Wi-Fi gateway first (routers forward and know local names); /proc/net/route gives it in little-endian hex.
 		'GW=""; while read -r _if dst gwh _rest; do if [ "$dst" = 00000000 ] && [ "${#gwh}" = 8 ] && [ "$gwh" != 00000000 ]; then a=${gwh#??????}; r=${gwh%??}; b=${r#????}; r=${r%??}; c=${r#??}; d=${r%??}; GW="$((16#$a)).$((16#$b)).$((16#$c)).$((16#$d))"; break; fi; done < /proc/net/route 2>/dev/null',
 		'if [ -n "$GW" ]; then printf "nameserver %s\\nnameserver 223.5.5.5\\nnameserver 8.8.8.8\\noptions timeout:2 attempts:2\\n" "$GW" > "$PROMETHEUS_ROOTFS/etc/resolv.conf" 2>/dev/null; fi',
-		'BIND=""',
-		'[ "$PWD" != "/" ] && BIND="-b $PWD"',
+		// Android storage: only the cwd used to be bound, so absolute paths (/storage/emulated/0/..., /sdcard/...) did not exist in
+		// the guest, and /sdcard is just a symlink at the host root. Bind the tree and the alias; access is still the app's own uid.
+		'for d in /storage /sdcard; do [ -e "$d" ] && OPTS+=("-b" "$d"); done',
+		'WORK=$(pwd -P 2>/dev/null) || WORK="$PWD"',
+		// The cwd, unless one of the binds above already covers it (binding / would shadow the whole rootfs, so never do that).
+		'case "$WORK" in ""|"/"|/storage|/storage/*|/sdcard|/sdcard/*) ;; *) OPTS+=("-b" "$WORK") ;; esac',
+		'[ -n "$PROMETHEUS_CACERT" ] && OPTS+=("-b" "$PROMETHEUS_CACERT:/etc/ssl/certs/ca-certificates.crt")',
 		// ssh with a saved password: the askpass helper lives in host storage and its variables must survive `env -i`.
-		'if [ -n "$SSH_ASKPASS" ]; then BIND="$BIND -b $(dirname "$SSH_ASKPASS")"; fi',
+		'[ -n "$SSH_ASKPASS" ] && OPTS+=("-b" "$(dirname "$SSH_ASKPASS")")',
 		'for v in SSH_ASKPASS SSH_ASKPASS_REQUIRE DISPLAY PROMETHEUS_SSH_SECRET; do eval "val=\\"\\${$v}\\""; [ -n "$val" ] && set -- "$v=$val" "$@"; done',
-		"exec \"$PROMETHEUS_PROOT\" --link2symlink -0 -r \"$PROMETHEUS_ROOTFS\" -b /dev -b /proc -b /sys $BIND $CA -w \"$PWD\" /usr/bin/env -i HOME=/root LANG=C.UTF-8 TERM=\"${TERM:-xterm}\" SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt PATH=/opt/python/bin:/opt/go/bin:/opt/rust/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo GOROOT=/opt/go GOPATH=/root/go GOTOOLCHAIN=local \"$@\"",
+		'[ -z "$WORK" ] && WORK="/"',
+		"exec \"$PROMETHEUS_PROOT\" \"${OPTS[@]}\" -w \"$WORK\" /usr/bin/env -i HOME=/root LANG=C.UTF-8 TERM=\"${TERM:-xterm}\" SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt PATH=/opt/python/bin:/opt/go/bin:/opt/rust/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo GOROOT=/opt/go GOPATH=/root/go GOTOOLCHAIN=local \"$@\"",
 		"",
 	].join("\n");
 	writeFileSync(join(jniDir, "libexec_guestrun.so"), guestrun, { mode: 0o755 });
