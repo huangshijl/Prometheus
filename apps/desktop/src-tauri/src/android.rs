@@ -146,10 +146,22 @@ pub fn link_guest_bins(data_dir: &Path, rootfs: &Path) -> PathBuf {
     if !rootfs.join("usr/bin/env").exists() {
         return dir;
     }
-    for sub in ["usr/bin", "usr/sbin", "usr/local/bin", "usr/local/sbin", "opt/python/bin", "opt/go/bin", "opt/rust/cargo/bin"] {
+    for sub in [
+        "usr/bin",
+        "usr/sbin",
+        "usr/local/bin",
+        "usr/local/sbin",
+        "opt/python/bin",
+        "opt/go/bin",
+        "opt/rust/cargo/bin",
+        "root/.local/bin",
+        "root/.cargo/bin",
+        "root/go/bin",
+    ] {
         let Ok(entries) = fs::read_dir(rootfs.join(sub)) else { continue };
         for entry in entries.flatten() {
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            // `metadata` follows symlinks, so a link to a directory is skipped too (`file_type` would not see it).
+            if entry.metadata().map(|m| m.is_dir()).unwrap_or(false) {
                 continue;
             }
             let at = dir.join(entry.file_name());
