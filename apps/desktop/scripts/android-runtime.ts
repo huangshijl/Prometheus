@@ -199,19 +199,44 @@ try {
 		if (!existsSync(src)) throw new Error(`${bin}: missing from the Termux packages`);
 		ship(src, `libexec_${bin}.so`);
 	}
-	// git's helpers: only the HTTP transports are programs worth shipping (each is ~2 MB). Everything else in git-core is either
-	// git again (builtins, which `git <cmd>` runs itself) or a shell script with a Termux-prefix shebang that cannot run here.
+	// git's helpers: the HTTP transports are programs worth shipping (each is ~2 MB). Everything else in git-core is either
+	// git again (builtins, which `git <cmd>` runs itself) or a shell script with a Termux-prefix shebang that cannot run here,
+	// so those are re-shipped with the system shell's. Perl/Python helpers are skipped: their interpreters are not bundled.
 	const gitCore = join(prefix, "libexec/git-core");
+	const gitHelpers = [...GIT_HELPERS];
 	for (const f of GIT_HELPERS) {
 		const full = join(gitCore, f);
 		if (!existsSync(full) || !isElf(realpathSync(full))) throw new Error(`git helper missing or not a program: ${f}`);
 		ship(full, `libgitcore_${f}.so`);
 	}
+	for (const f of readdirSync(gitCore)) {
+		if (GIT_HELPERS.includes(f)) continue;
+		const full = join(gitCore, f);
+		let program = false;
+		try {
+			program = isElf(realpathSync(full));
+		} catch {
+			continue;
+		}
+		if (program) continue;
+		let text: string;
+		try {
+			text = readFileSync(full, "utf8");
+		} catch {
+			continue;
+		}
+		const newline = text.indexOf("\n");
+		if (newline < 0) continue;
+		// `#!/data/data/com.termux/files/usr/bin/sh` (bash is not bundled: /system/bin/sh is what the app has).
+		if (!/^#!\s*\S*\/(?:env\s+)?(?:ba)?sh\s*$/.test(text.slice(0, newline))) continue;
+		writeFileSync(join(jniDir, `libgitcore_${f}.so`), `#!/system/bin/sh\n${text.slice(newline + 1)}`, { mode: 0o755 });
+		gitHelpers.push(f);
+	}
 	// PRoot's loader is exec'd by proot itself, so it must also live in the library directory (found through PROOT_LOADER).
 	const loader = join(prefix, "libexec/proot/loader");
 	if (!existsSync(loader)) throw new Error("proot loader missing from the Termux proot package");
 	ship(loader, "libproot_loader.so");
-	console.log(`shipped ${BINARIES.join(", ")} and ${GIT_HELPERS.join(", ")}`);
+	console.log(`shipped ${BINARIES.join(", ")} and ${gitHelpers.join(", ")}`);
 
 	// npm is plain JavaScript: ship its tree beside the server, and tiny shell shims as the `npm`/`npx` commands.
 	// (Scripts in app storage cannot be executed, but a script in the library directory can.)
@@ -222,10 +247,19 @@ try {
 	mkdirSync(dirname(toolsOut), { recursive: true });
 	cpSync(npmTree, toolsOut, { recursive: true, dereference: true });
 	const shim = (body: string) => `#!/system/bin/sh\n${body}\n`;
-	writeFileSync(join(jniDir, "libexec_npm.so"), shim('exec "$PROMETHEUS_NODE" "$PROMETHEUS_NPM_CLI" "$@"'), { mode: 0o755 });
+	writeFileSync(
+		join(jniDir, "libexec_npm.so"),
+		shim('"$PROMETHEUS_NODE" "$PROMETHEUS_NPM_CLI" "$@"\nrc=$?\ncase " $* " in *" -g "*|*" --global "*) "$PROMETHEUS_TOOLS_BIN/npmsync" >/dev/null 2>&1 ;; esac\nexit $rc'),
+		{ mode: 0o755 },
+	);
 	// npm's own npx cannot start packages here (their bins say `#!/usr/bin/env node`, and there is no /usr/bin/env), so use ours.
 	copyFileSync(join(dirname(fileURLToPath(import.meta.url)), "android/npx.mjs"), join(bundle, "tools/npx.mjs"));
 	writeFileSync(join(jniDir, "libexec_npx.so"), shim('exec "$PROMETHEUS_NODE" "$PROMETHEUS_NPX_JS" "$@"'), { mode: 0o755 });
+	// `npm install -g` writes its commands as `#!/usr/bin/env node` scripts too. `npmbin` runs one by name out of the
+	// prefix instead, and `npmsync` (run by the npm shim above) links every installed command to it on PATH.
+	copyFileSync(join(dirname(fileURLToPath(import.meta.url)), "android/npmbin.mjs"), join(bundle, "tools/npmbin.mjs"));
+	writeFileSync(join(jniDir, "libexec_npmbin.so"), shim('exec "$PROMETHEUS_NODE" "$PROMETHEUS_NPMBIN_JS" "$(basename "$0")" "$@"'), { mode: 0o755 });
+	writeFileSync(join(jniDir, "libexec_npmsync.so"), shim('exec "$PROMETHEUS_NODE" "$PROMETHEUS_NPMBIN_JS" --sync'), { mode: 0o755 });
 
 	// Shims for the on-demand runtimes. `guestrun` starts a command inside the PRoot rootfs; keep its environment in sync with
 	// GUEST_PATH in src-tauri/src/android.rs. Like npm above, these are scripts in the library directory, the only place they can run from.
@@ -259,7 +293,9 @@ try {
 		'[ -n "$PROMETHEUS_CACERT" ] && OPTS+=("-b" "$PROMETHEUS_CACERT:/etc/ssl/certs/ca-certificates.crt")',
 		// ssh with a saved password: the askpass helper lives in host storage and its variables must survive `env -i`.
 		'[ -n "$SSH_ASKPASS" ] && OPTS+=("-b" "$(dirname "$SSH_ASKPASS")")',
-		'for v in SSH_ASKPASS SSH_ASKPASS_REQUIRE DISPLAY PROMETHEUS_SSH_SECRET; do eval "val=\\"\\${$v}\\""; [ -n "$val" ] && set -- "$v=$val" "$@"; done',
+		// `env -i` drops everything, so the ssh askpass variables, and any proxy or package mirror the user set in the
+		// host environment, are forwarded by hand.
+		'for v in SSH_ASKPASS SSH_ASKPASS_REQUIRE DISPLAY PROMETHEUS_SSH_SECRET HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy PIP_INDEX_URL PIP_TRUSTED_HOST npm_config_registry GOPROXY; do eval "val=\\"\\${$v}\\""; [ -n "$val" ] && set -- "$v=$val" "$@"; done',
 		'[ -z "$WORK" ] && WORK="/"',
 		"exec \"$PROMETHEUS_PROOT\" \"${OPTS[@]}\" -w \"$WORK\" /usr/bin/env -i HOME=/root LANG=C.UTF-8 TERM=\"${TERM:-xterm}\" SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt PATH=/opt/python/bin:/opt/go/bin:/opt/rust/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo GOROOT=/opt/go GOPATH=/root/go GOTOOLCHAIN=local \"$@\"",
 		"",
@@ -269,13 +305,13 @@ try {
 	// this dispatcher runs the command named by $0 inside the rootfs. apt/dpkg re-scan afterwards so new packages appear at once.
 	writeFileSync(
 		join(jniDir, "libexec_guestany.so"),
-		shim('name=$(basename "$0")\n"$PROMETHEUS_TOOLS_BIN/guestrun" "$name" "$@"\nrc=$?\ncase "$name" in apt|apt-get|dpkg|aptitude) "$PROMETHEUS_TOOLS_BIN/guestsync" ;; esac\nexit $rc'),
+		shim('name=$(basename "$0")\n"$PROMETHEUS_TOOLS_BIN/guestrun" "$name" "$@"\nrc=$?\ncase "$name" in apt|apt-get|dpkg|aptitude|pip|pip3|npm|npx|go|cargo) "$PROMETHEUS_TOOLS_BIN/guestsync" ;; esac\nexit $rc'),
 		{ mode: 0o755 },
 	);
 	writeFileSync(
 		join(jniDir, "libexec_guestsync.so"),
 		shim(
-			'D="$PROMETHEUS_GUEST_BIN"; mkdir -p "$D"\nfor dir in usr/bin usr/sbin usr/local/bin usr/local/sbin opt/python/bin opt/go/bin opt/rust/cargo/bin; do\n  for f in "$PROMETHEUS_ROOTFS/$dir"/*; do\n    { [ -e "$f" ] || [ -L "$f" ]; } || continue\n    [ -d "$f" ] && continue\n    n=${f##*/}\n    [ -e "$D/$n" ] || [ -L "$D/$n" ] || ln -s "$PROMETHEUS_TOOLS_BIN/guestany" "$D/$n"\n  done\ndone'
+			'D="$PROMETHEUS_GUEST_BIN"; mkdir -p "$D"\nfor dir in usr/bin usr/sbin usr/local/bin usr/local/sbin opt/python/bin opt/go/bin opt/rust/cargo/bin root/.local/bin root/.cargo/bin root/go/bin; do\n  for f in "$PROMETHEUS_ROOTFS/$dir"/*; do\n    { [ -e "$f" ] || [ -L "$f" ]; } || continue\n    [ -d "$f" ] && continue\n    n=${f##*/}\n    [ -e "$D/$n" ] || [ -L "$D/$n" ] || ln -s "$PROMETHEUS_TOOLS_BIN/guestany" "$D/$n"\n  done\ndone'
 		),
 		{ mode: 0o755 },
 	);

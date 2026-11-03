@@ -111,6 +111,10 @@ fn link_tools(data_dir: &Path, native: &Path, guest_ids: &[String]) -> (PathBuf,
         let _ = fs::create_dir_all(dir);
     }
     link(&native.join(NODE_BIN), &bin.join("node"));
+    // `git-upload-pack` and `git-receive-pack` are the git program under another name; local clones and fetches run them.
+    for name in ["git-upload-pack", "git-receive-pack"] {
+        link(&native.join("libexec_git.so"), &git_core.join(name));
+    }
     if let Ok(entries) = fs::read_dir(native) {
         for entry in entries.flatten() {
             let file = entry.file_name().to_string_lossy().into_owned();
@@ -142,10 +146,22 @@ pub fn link_guest_bins(data_dir: &Path, rootfs: &Path) -> PathBuf {
     if !rootfs.join("usr/bin/env").exists() {
         return dir;
     }
-    for sub in ["usr/bin", "usr/sbin", "usr/local/bin", "usr/local/sbin", "opt/python/bin", "opt/go/bin", "opt/rust/cargo/bin"] {
+    for sub in [
+        "usr/bin",
+        "usr/sbin",
+        "usr/local/bin",
+        "usr/local/sbin",
+        "opt/python/bin",
+        "opt/go/bin",
+        "opt/rust/cargo/bin",
+        "root/.local/bin",
+        "root/.cargo/bin",
+        "root/go/bin",
+    ] {
         let Ok(entries) = fs::read_dir(rootfs.join(sub)) else { continue };
         for entry in entries.flatten() {
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            // `metadata` follows symlinks, so a link to a directory is skipped too (`file_type` would not see it).
+            if entry.metadata().map(|m| m.is_dir()).unwrap_or(false) {
                 continue;
             }
             let at = dir.join(entry.file_name());
@@ -195,9 +211,14 @@ pub fn tool_env(data_dir: &Path, runtime: &Runtime, rt_root: &Path, guest_ids: &
     }
 
     let guest_bin = link_guest_bins(data_dir, &crate::runtimes::rootfs_dir(rt_root));
+    // Commands installed with `npm install -g` get a link here (see tools/npmbin.mjs).
+    let npm_global_bin = data_dir.join("npm-global-bin");
+    let _ = fs::create_dir_all(&npm_global_bin);
     let mut path = OsString::from(&bin);
     path.push(":/system/bin:/system/xbin:");
     path.push(&guest_bin);
+    path.push(":");
+    path.push(&npm_global_bin);
     if let Some(old) = std::env::var_os("PATH") {
         path.push(":");
         path.push(old);
@@ -211,6 +232,8 @@ pub fn tool_env(data_dir: &Path, runtime: &Runtime, rt_root: &Path, guest_ids: &
         ("PROMETHEUS_NODE", runtime.node.clone().into()),
         ("PROMETHEUS_NPM_CLI", npm_cli.into()),
         ("PROMETHEUS_NPX_JS", server.join("tools/npx.mjs").into()),
+        ("PROMETHEUS_NPMBIN_JS", server.join("tools/npmbin.mjs").into()),
+        ("PROMETHEUS_NPM_GLOBAL_BIN", npm_global_bin.into()),
         ("PROMETHEUS_TOOLS_BIN", bin.into()),
         ("PROMETHEUS_GUEST_BIN", guest_bin.into()),
         ("OPENSSL_CONF", openssl_conf.into()),
