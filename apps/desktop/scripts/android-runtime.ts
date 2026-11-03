@@ -192,19 +192,44 @@ try {
 		if (!existsSync(src)) throw new Error(`${bin}: missing from the Termux packages`);
 		ship(src, `libexec_${bin}.so`);
 	}
-	// git's helpers: only the HTTP transports are programs worth shipping (each is ~2 MB). Everything else in git-core is either
-	// git again (builtins, which `git <cmd>` runs itself) or a shell script with a Termux-prefix shebang that cannot run here.
+	// git's helpers: the HTTP transports are programs worth shipping (each is ~2 MB). Everything else in git-core is either
+	// git again (builtins, which `git <cmd>` runs itself) or a shell script with a Termux-prefix shebang that cannot run here,
+	// so those are re-shipped with the system shell's. Perl/Python helpers are skipped: their interpreters are not bundled.
 	const gitCore = join(prefix, "libexec/git-core");
+	const gitHelpers = [...GIT_HELPERS];
 	for (const f of GIT_HELPERS) {
 		const full = join(gitCore, f);
 		if (!existsSync(full) || !isElf(realpathSync(full))) throw new Error(`git helper missing or not a program: ${f}`);
 		ship(full, `libgitcore_${f}.so`);
 	}
+	for (const f of readdirSync(gitCore)) {
+		if (GIT_HELPERS.includes(f)) continue;
+		const full = join(gitCore, f);
+		let program = false;
+		try {
+			program = isElf(realpathSync(full));
+		} catch {
+			continue;
+		}
+		if (program) continue;
+		let text: string;
+		try {
+			text = readFileSync(full, "utf8");
+		} catch {
+			continue;
+		}
+		const newline = text.indexOf("\n");
+		if (newline < 0) continue;
+		// `#!/data/data/com.termux/files/usr/bin/sh` (bash is not bundled: /system/bin/sh is what the app has).
+		if (!/^#!\s*\S*\/(?:env\s+)?(?:ba)?sh\s*$/.test(text.slice(0, newline))) continue;
+		writeFileSync(join(jniDir, `libgitcore_${f}.so`), `#!/system/bin/sh\n${text.slice(newline + 1)}`, { mode: 0o755 });
+		gitHelpers.push(f);
+	}
 	// PRoot's loader is exec'd by proot itself, so it must also live in the library directory (found through PROOT_LOADER).
 	const loader = join(prefix, "libexec/proot/loader");
 	if (!existsSync(loader)) throw new Error("proot loader missing from the Termux proot package");
 	ship(loader, "libproot_loader.so");
-	console.log(`shipped ${BINARIES.join(", ")} and ${GIT_HELPERS.join(", ")}`);
+	console.log(`shipped ${BINARIES.join(", ")} and ${gitHelpers.join(", ")}`);
 
 	// npm is plain JavaScript: ship its tree beside the server, and tiny shell shims as the `npm`/`npx` commands.
 	// (Scripts in app storage cannot be executed, but a script in the library directory can.)
