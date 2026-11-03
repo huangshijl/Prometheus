@@ -240,10 +240,19 @@ try {
 	mkdirSync(dirname(toolsOut), { recursive: true });
 	cpSync(npmTree, toolsOut, { recursive: true, dereference: true });
 	const shim = (body: string) => `#!/system/bin/sh\n${body}\n`;
-	writeFileSync(join(jniDir, "libexec_npm.so"), shim('exec "$PROMETHEUS_NODE" "$PROMETHEUS_NPM_CLI" "$@"'), { mode: 0o755 });
+	writeFileSync(
+		join(jniDir, "libexec_npm.so"),
+		shim('"$PROMETHEUS_NODE" "$PROMETHEUS_NPM_CLI" "$@"\nrc=$?\ncase " $* " in *" -g "*|*" --global "*) "$PROMETHEUS_TOOLS_BIN/npmsync" >/dev/null 2>&1 ;; esac\nexit $rc'),
+		{ mode: 0o755 },
+	);
 	// npm's own npx cannot start packages here (their bins say `#!/usr/bin/env node`, and there is no /usr/bin/env), so use ours.
 	copyFileSync(join(dirname(fileURLToPath(import.meta.url)), "android/npx.mjs"), join(bundle, "tools/npx.mjs"));
 	writeFileSync(join(jniDir, "libexec_npx.so"), shim('exec "$PROMETHEUS_NODE" "$PROMETHEUS_NPX_JS" "$@"'), { mode: 0o755 });
+	// `npm install -g` writes its commands as `#!/usr/bin/env node` scripts too. `npmbin` runs one by name out of the
+	// prefix instead, and `npmsync` (run by the npm shim above) links every installed command to it on PATH.
+	copyFileSync(join(dirname(fileURLToPath(import.meta.url)), "android/npmbin.mjs"), join(bundle, "tools/npmbin.mjs"));
+	writeFileSync(join(jniDir, "libexec_npmbin.so"), shim('exec "$PROMETHEUS_NODE" "$PROMETHEUS_NPMBIN_JS" "$(basename "$0")" "$@"'), { mode: 0o755 });
+	writeFileSync(join(jniDir, "libexec_npmsync.so"), shim('exec "$PROMETHEUS_NODE" "$PROMETHEUS_NPMBIN_JS" --sync'), { mode: 0o755 });
 
 	// Shims for the on-demand runtimes. `guestrun` starts a command inside the PRoot rootfs; keep its environment in sync with
 	// GUEST_PATH in src-tauri/src/android.rs. Like npm above, these are scripts in the library directory, the only place they can run from.
