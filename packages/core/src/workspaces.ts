@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { createJsonStore, type JsonStore } from "@prometheus/plugin-sdk";
 import { AppError, type WorkspaceInfo, type WorktreeOverride } from "@prometheus/protocol";
@@ -17,9 +17,22 @@ export function normalizeDir(path: string): string {
 	return /^[A-Za-z]:$/.test(abs) ? `${abs}\\` : abs || "/";
 }
 
+/**
+ * Canonical form of a directory: symlinks are resolved when the path exists, so `/sdcard/Prometheus` and
+ * `/storage/emulated/0/Prometheus` (or a symlinked home) are one workspace instead of two.
+ */
+export function canonicalDir(path: string): string {
+	const normalized = normalizeDir(path);
+	try {
+		return normalizeDir(realpathSync(normalized));
+	} catch {
+		return normalized;
+	}
+}
+
 /** Stable id per directory; case-insensitive on Windows so `C:\Foo` and `c:\foo` share a workspace. */
 export function workspaceId(path: string): string {
-	const key = process.platform === "win32" ? normalizeDir(path).toLowerCase() : normalizeDir(path);
+	const key = process.platform === "win32" ? canonicalDir(path).toLowerCase() : canonicalDir(path);
 	return createHash("sha1").update(key).digest("hex").slice(0, 12);
 }
 
@@ -114,7 +127,7 @@ export class WorkspaceStore {
 		await this.write((next) => {
 			for (const [id, e] of missing) {
 				if (next.workspaces.some((w) => w.id === id) || next.hidden.includes(id)) continue;
-				const dir = normalizeDir(e.path);
+				const dir = canonicalDir(e.path);
 				next.workspaces.push({ id, path: dir, name: basename(dir) || dir, createdAt: e.modified, lastUsedAt: e.modified });
 			}
 		});
