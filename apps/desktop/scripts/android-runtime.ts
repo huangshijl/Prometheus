@@ -252,7 +252,9 @@ try {
 		'[ -n "$PROMETHEUS_CACERT" ] && OPTS+=("-b" "$PROMETHEUS_CACERT:/etc/ssl/certs/ca-certificates.crt")',
 		// ssh with a saved password: the askpass helper lives in host storage and its variables must survive `env -i`.
 		'[ -n "$SSH_ASKPASS" ] && OPTS+=("-b" "$(dirname "$SSH_ASKPASS")")',
-		'for v in SSH_ASKPASS SSH_ASKPASS_REQUIRE DISPLAY PROMETHEUS_SSH_SECRET; do eval "val=\\"\\${$v}\\""; [ -n "$val" ] && set -- "$v=$val" "$@"; done',
+		// `env -i` drops everything, so the ssh askpass variables, and any proxy or package mirror the user set in the
+		// host environment, are forwarded by hand.
+		'for v in SSH_ASKPASS SSH_ASKPASS_REQUIRE DISPLAY PROMETHEUS_SSH_SECRET HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy PIP_INDEX_URL PIP_TRUSTED_HOST npm_config_registry GOPROXY; do eval "val=\\"\\${$v}\\""; [ -n "$val" ] && set -- "$v=$val" "$@"; done',
 		'[ -z "$WORK" ] && WORK="/"',
 		"exec \"$PROMETHEUS_PROOT\" \"${OPTS[@]}\" -w \"$WORK\" /usr/bin/env -i HOME=/root LANG=C.UTF-8 TERM=\"${TERM:-xterm}\" SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt PATH=/opt/python/bin:/opt/go/bin:/opt/rust/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo GOROOT=/opt/go GOPATH=/root/go GOTOOLCHAIN=local \"$@\"",
 		"",
