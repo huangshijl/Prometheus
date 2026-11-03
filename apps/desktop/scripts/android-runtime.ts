@@ -360,6 +360,8 @@ try {
 		"android.permission.POST_NOTIFICATIONS",
 		"android.permission.WAKE_LOCK",
 		"android.permission.ACCESS_WIFI_STATE",
+		// Reading the active network's resolvers (the guest cannot discover them, see writeGuestDns).
+		"android.permission.ACCESS_NETWORK_STATE",
 		"android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
 		"android.permission.MANAGE_EXTERNAL_STORAGE",
 	];
