@@ -6,7 +6,7 @@
 import { execFile } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import { delimiter, dirname, join, sep as pathSep } from "node:path";
 import { ACP_PRESETS, BUILTIN_AGENTS } from "@prometheus/protocol";
 import { resolveExecutable } from "@prometheus/subagents";
@@ -71,10 +71,17 @@ async function reachable(registry: string): Promise<boolean> {
  * `npm install`-style commands with a fallback registry. A registry the user configured themselves (env or npmrc) is left
  * alone. Otherwise the official one is probed first (5 s): if it cannot be reached the mirror goes first, so nobody waits
  * out npm's multi-minute retries. Each attempt fails fast, then the next registry is tried.
+ * `dataDir` adds the package marketplace's own registry in front of those, so a mirror set in Settings → Packages also
+ * applies to the packages installed from here (npm has no other way to learn about it).
  */
-export async function runNpmWithFallback(args: string[], timeoutMs: number): Promise<string> {
+export async function runNpmWithFallback(args: string[], timeoutMs: number, dataDir?: string): Promise<string> {
 	if (process.env.npm_config_registry || process.env.NPM_CONFIG_REGISTRY) return runNpm(args, timeoutMs);
-	const order = (await reachable(NPM_REGISTRIES[0]!)) ? NPM_REGISTRIES : [...NPM_REGISTRIES].reverse();
+	const configured = dataDir ? await marketplaceRegistry(dataDir) : undefined;
+	const order = configured
+		? [configured, ...NPM_REGISTRIES.filter((r) => r !== configured)]
+		: (await reachable(NPM_REGISTRIES[0]!))
+			? NPM_REGISTRIES
+			: [...NPM_REGISTRIES].reverse();
 	let first: unknown;
 	for (const registry of order) {
 		try {
@@ -84,6 +91,18 @@ export async function runNpmWithFallback(args: string[], timeoutMs: number): Pro
 		}
 	}
 	throw first;
+}
+
+/** The registry configured for the package marketplace (`config.json` → `pluginSettings.packages.registry`), if any. */
+async function marketplaceRegistry(dataDir: string): Promise<string | undefined> {
+	try {
+		const raw = JSON.parse(await readFile(join(dataDir, "config.json"), "utf8")) as { pluginSettings?: Record<string, Record<string, unknown>> };
+		const registry = raw.pluginSettings?.packages?.registry;
+		if (typeof registry === "string" && registry.trim()) return registry.trim();
+	} catch {
+		/* no config yet, or nothing configured: npm's own registry */
+	}
+	return undefined;
 }
 
 export function runNpm(args: string[], timeoutMs: number): Promise<string> {
@@ -133,7 +152,7 @@ export async function installAgentCli(dataDir: string, agent: string, prefix?: s
 	if (!npm.ok) throw new Error(`找不到 npm：${npm.reason}`);
 	const target = prefix ?? agentInstallPrefix(dataDir);
 	await mkdir(target, { recursive: true });
-	const output = await runNpmWithFallback(["install", "--global", "--prefix", target, "--no-fund", "--no-audit", "--loglevel=error", `${pkg.pkg}@latest`], 15 * 60_000);
+	const output = await runNpmWithFallback(["install", "--global", "--prefix", target, "--no-fund", "--no-audit", "--loglevel=error", `${pkg.pkg}@latest`], 15 * 60_000, dataDir);
 	const command = prefix ? agentEntry(dataDir, agent) : installedCli(dataDir, agent);
 	if (!command) throw new Error(`安装完成，但没有找到 ${pkg.bin} 可执行文件。\n${output.trim().split(/\r?\n/).slice(-6).join("\n")}`);
 	return { command, output };

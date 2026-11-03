@@ -104,7 +104,7 @@ export function installOptionalPackage(dataDir: string, id: OptionalPackageId): 
 		await mkdir(dir, { recursive: true });
 		await writeFile(join(dir, "package.json"), JSON.stringify({ name: `prometheus-${id}`, private: true }));
 		const specs = [`${def.pkg}@${def.version}`, ...(def.extra?.() ?? [])];
-		await runNpmWithFallback(npmArgs(dir, specs), 20 * 60_000);
+		await runNpmWithFallback(npmArgs(dir, specs), 20 * 60_000, dataDir);
 		if (!existsSync(entryOf(dir, def.pkg))) throw new Error(`安装完成，但没有找到 ${def.pkg}`);
 	})().finally(() => running.delete(id));
 	running.set(id, job);
