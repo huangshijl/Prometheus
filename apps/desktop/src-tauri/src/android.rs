@@ -111,6 +111,10 @@ fn link_tools(data_dir: &Path, native: &Path, guest_ids: &[String]) -> (PathBuf,
         let _ = fs::create_dir_all(dir);
     }
     link(&native.join(NODE_BIN), &bin.join("node"));
+    // `git-upload-pack` and `git-receive-pack` are the git program under another name; local clones and fetches run them.
+    for name in ["git-upload-pack", "git-receive-pack"] {
+        link(&native.join("libexec_git.so"), &git_core.join(name));
+    }
     if let Ok(entries) = fs::read_dir(native) {
         for entry in entries.flatten() {
             let file = entry.file_name().to_string_lossy().into_owned();
