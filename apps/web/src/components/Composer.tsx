@@ -563,6 +563,7 @@ export function Composer({ newChat = false }: { newChat?: boolean }) {
 	// ArrowUp history: position in the sent messages (-1: not browsing) and what was typed before browsing.
 	const history = useRef({ at: -1, draft: "" });
 	const view = useStore((s) => s.view);
+
 	const [expanded, setExpanded] = useState(false);
 	const expandedRef = useRef<HTMLTextAreaElement>(null);
 	/** The textarea being typed into: the expanded sheet covers the inline one. */
@@ -579,6 +580,7 @@ export function Composer({ newChat = false }: { newChat?: boolean }) {
 	}, [view]);
 	// Esc and the button close the sheet on a desktop; on a phone the back gesture has to as well.
 	useBackLayer(BACK_LAYER.sheet, expanded, collapse);
+
 
 	useEffect(() => {
 		if (editorText) {
@@ -815,6 +817,7 @@ export function Composer({ newChat = false }: { newChat?: boolean }) {
 				return;
 			}
 		}
+
 		// Esc leaves the expanded sheet first; while a reply is running it still stops that instead.
 		if (e.key === "Escape" && expanded && !streaming) {
 			e.preventDefault();
@@ -884,6 +887,7 @@ export function Composer({ newChat = false }: { newChat?: boolean }) {
 			)}
 
 			{showCommands && (
+
 				<div className="absolute right-3 bottom-full left-3 z-30 mb-2 overflow-hidden rounded-xl border border-ink-700 bg-ink-900/95 shadow-2xl shadow-black/40 backdrop-blur md:right-5 md:left-5">
 					<SlashCommands items={matches} cursor={cursor} onPick={pickSlash} />
 				</div>
@@ -1038,6 +1042,7 @@ export function Composer({ newChat = false }: { newChat?: boolean }) {
 						className="fixed right-0 left-0 z-[55] flex flex-col overflow-hidden bg-ink-950"
 						style={{ top: sheet.top, height: sheet.height, paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
 					>
+
 						<div className="flex items-center gap-2 border-b border-ink-800 px-3 py-2">
 							<span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-200">{t("expand")}</span>
 							<button
@@ -1083,6 +1088,7 @@ export function Composer({ newChat = false }: { newChat?: boolean }) {
 								</div>
 							)}
 							{showCommands && (
+
 								<div className="max-h-56 shrink-0 overflow-y-auto border-t border-ink-800">
 									<SlashCommands items={matches} cursor={cursor} onPick={pickSlash} />
 								</div>
