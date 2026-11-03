@@ -199,9 +199,14 @@ pub fn tool_env(data_dir: &Path, runtime: &Runtime, rt_root: &Path, guest_ids: &
     }
 
     let guest_bin = link_guest_bins(data_dir, &crate::runtimes::rootfs_dir(rt_root));
+    // Commands installed with `npm install -g` get a link here (see tools/npmbin.mjs).
+    let npm_global_bin = data_dir.join("npm-global-bin");
+    let _ = fs::create_dir_all(&npm_global_bin);
     let mut path = OsString::from(&bin);
     path.push(":/system/bin:/system/xbin:");
     path.push(&guest_bin);
+    path.push(":");
+    path.push(&npm_global_bin);
     if let Some(old) = std::env::var_os("PATH") {
         path.push(":");
         path.push(old);
@@ -215,6 +220,8 @@ pub fn tool_env(data_dir: &Path, runtime: &Runtime, rt_root: &Path, guest_ids: &
         ("PROMETHEUS_NODE", runtime.node.clone().into()),
         ("PROMETHEUS_NPM_CLI", npm_cli.into()),
         ("PROMETHEUS_NPX_JS", server.join("tools/npx.mjs").into()),
+        ("PROMETHEUS_NPMBIN_JS", server.join("tools/npmbin.mjs").into()),
+        ("PROMETHEUS_NPM_GLOBAL_BIN", npm_global_bin.into()),
         ("PROMETHEUS_TOOLS_BIN", bin.into()),
         ("PROMETHEUS_GUEST_BIN", guest_bin.into()),
         ("OPENSSL_CONF", openssl_conf.into()),
