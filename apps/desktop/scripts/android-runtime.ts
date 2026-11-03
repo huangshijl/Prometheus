@@ -298,13 +298,13 @@ try {
 	// this dispatcher runs the command named by $0 inside the rootfs. apt/dpkg re-scan afterwards so new packages appear at once.
 	writeFileSync(
 		join(jniDir, "libexec_guestany.so"),
-		shim('name=$(basename "$0")\n"$PROMETHEUS_TOOLS_BIN/guestrun" "$name" "$@"\nrc=$?\ncase "$name" in apt|apt-get|dpkg|aptitude) "$PROMETHEUS_TOOLS_BIN/guestsync" ;; esac\nexit $rc'),
+		shim('name=$(basename "$0")\n"$PROMETHEUS_TOOLS_BIN/guestrun" "$name" "$@"\nrc=$?\ncase "$name" in apt|apt-get|dpkg|aptitude|pip|pip3|npm|npx|go|cargo) "$PROMETHEUS_TOOLS_BIN/guestsync" ;; esac\nexit $rc'),
 		{ mode: 0o755 },
 	);
 	writeFileSync(
 		join(jniDir, "libexec_guestsync.so"),
 		shim(
-			'D="$PROMETHEUS_GUEST_BIN"; mkdir -p "$D"\nfor dir in usr/bin usr/sbin usr/local/bin usr/local/sbin opt/python/bin opt/go/bin opt/rust/cargo/bin; do\n  for f in "$PROMETHEUS_ROOTFS/$dir"/*; do\n    { [ -e "$f" ] || [ -L "$f" ]; } || continue\n    [ -d "$f" ] && continue\n    n=${f##*/}\n    [ -e "$D/$n" ] || [ -L "$D/$n" ] || ln -s "$PROMETHEUS_TOOLS_BIN/guestany" "$D/$n"\n  done\ndone'
+			'D="$PROMETHEUS_GUEST_BIN"; mkdir -p "$D"\nfor dir in usr/bin usr/sbin usr/local/bin usr/local/sbin opt/python/bin opt/go/bin opt/rust/cargo/bin root/.local/bin root/.cargo/bin root/go/bin; do\n  for f in "$PROMETHEUS_ROOTFS/$dir"/*; do\n    { [ -e "$f" ] || [ -L "$f" ]; } || continue\n    [ -d "$f" ] && continue\n    n=${f##*/}\n    [ -e "$D/$n" ] || [ -L "$D/$n" ] || ln -s "$PROMETHEUS_TOOLS_BIN/guestany" "$D/$n"\n  done\ndone'
 		),
 		{ mode: 0o755 },
 	);
