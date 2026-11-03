@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { definePlugin } from "@prometheus/plugin-sdk";
 import { ShellSession } from "./shell.ts";
@@ -38,10 +38,15 @@ export default definePlugin({
 
 		/** Only folders the app already knows may host a shell, so a client cannot pick an arbitrary start point. */
 		const allowedCwd = async (wanted: string): Promise<string> => {
-			const norm = (p: string) => (process.platform === "win32" ? resolve(p).toLowerCase() : resolve(p));
-			const known = [ctx.cwd, ...(await ctx.workspaces()).map((w) => w.path)].map(norm);
+			// Symlinks are resolved on both sides: `/sdcard/x` and `/storage/emulated/0/x` are the same folder.
+			const norm = async (p: string) => {
+				const abs = resolve(p);
+				const real = await realpath(abs).catch(() => abs);
+				return process.platform === "win32" ? real.toLowerCase() : real;
+			};
+			const known = await Promise.all([ctx.cwd, ...(await ctx.workspaces()).map((w) => w.path)].map(norm));
 			const dir = resolve(wanted || ctx.cwd);
-			if (!known.includes(norm(dir))) throw new Error("该目录不在已添加的项目中");
+			if (!known.includes(await norm(dir))) throw new Error("该目录不在已添加的项目中");
 			if (!(await stat(dir).catch(() => undefined))?.isDirectory()) throw new Error("目录不存在");
 			return dir;
 		};

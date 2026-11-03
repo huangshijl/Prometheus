@@ -76,8 +76,15 @@ const PROOT_BIN: &str = "libexec_proot.so";
 const PROOT_LOADER: &str = "libproot_loader.so";
 
 /// Shared storage the user can browse. Only usable once "all files access" is granted, so probe by writing.
+/// `/storage/emulated/0` is the owner user's storage; a work profile or a secondary user has another number,
+/// so prefer the framework's `EXTERNAL_STORAGE` and fall back to resolving the `/sdcard` alias.
 pub fn workspace_dir(data_dir: &Path) -> PathBuf {
-    let shared = PathBuf::from("/storage/emulated/0/Prometheus");
+    let external = std::env::var_os("EXTERNAL_STORAGE")
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .or_else(|| fs::canonicalize("/sdcard").ok())
+        .unwrap_or_else(|| PathBuf::from("/storage/emulated/0"));
+    let shared = external.join("Prometheus");
     if fs::create_dir_all(&shared).is_ok() {
         let probe = shared.join(".write-test");
         if fs::write(&probe, b"").is_ok() {
