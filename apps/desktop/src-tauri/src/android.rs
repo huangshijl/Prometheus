@@ -238,6 +238,15 @@ pub fn tool_env(data_dir: &Path, runtime: &Runtime, rt_root: &Path, guest_ids: &
     env.push(("PROOT_LOADER", native.join(PROOT_LOADER).into()));
     env.push(("PROOT_TMP_DIR", data_dir.join("tmp").into()));
     env.push(("PROMETHEUS_ROOTFS", crate::runtimes::rootfs_dir(rt_root).into()));
+    // Android denies /proc/net/route and netlink to apps, so MainActivity publishes the network's gateway and
+    // resolvers here for `guestrun` to write into the rootfs' resolv.conf. The variables are overrides for tests.
+    env.push(("PROMETHEUS_DNS_FILE", data_dir.join("dns.txt").into()));
+    if let Ok(value) = std::env::var("PROMETHEUS_DNS") {
+        env.push(("PROMETHEUS_DNS", value.into()));
+    }
+    if let Ok(value) = std::env::var("PROMETHEUS_GATEWAY") {
+        env.push(("PROMETHEUS_GATEWAY", value.into()));
+    }
     if cacert.is_file() {
         env.push(("PROMETHEUS_CACERT", cacert.clone().into()));
         env.push(("GIT_SSL_CAINFO", cacert.clone().into()));
