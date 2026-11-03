@@ -16,6 +16,7 @@ declare global {
 		 * `false` means the shell backgrounds the app).
 		 */
 		PrometheusBack?: () => boolean;
+
 	}
 }
 
