@@ -1,0 +1,107 @@
+name: Android APK
+
+# Builds an installable arm64 APK on demand, without the desktop release jobs, so a change can be tried on a
+# phone in ~10 minutes. Actions > Android APK > Run workflow, then download the artifact.
+on:
+  workflow_dispatch:
+  # Every push that can change the app (or what it bundles) rebuilds the APK, so a phone can try it right away.
+  push:
+    branches: ["main"]
+    paths:
+      - "apps/**"
+      - "packages/**"
+      - "plugins/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/android.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install NDK
+        run: |
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          sm="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$sm" ] || sm=$(ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | head -n1)
+          yes | "$sm" --licenses >/dev/null || true
+          "$sm" --install "ndk;27.2.12479018" "platforms;android-36" "build-tools;36.0.0"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Build web UI and the Android server bundle
+        run: |
+          pnpm --filter @prometheus/web build
+          pnpm --filter @prometheus/desktop bundle-server:android
+
+      - name: Generate the Android project
+        working-directory: apps/desktop
+        run: pnpm tauri android init --ci
+
+      - name: Apply the app icons
+        run: |
+          res=apps/desktop/src-tauri/gen/android/app/src/main/res
+          [ -d "$res" ] || { echo "no res dir at $res" >&2; exit 1; }
+          cp -r apps/desktop/src-tauri/icons/android/. "$res/"
+          test -f "$res/mipmap-anydpi-v26/ic_launcher.xml"
+
+      - name: Cache pinned Termux packages
+        uses: actions/cache@v4
+        with:
+          path: .termux-cache
+          key: termux-${{ hashFiles('apps/desktop/scripts/android-termux.lock.json') }}
+
+      - name: Add Node, npm, git and the server to the project
+        env:
+          TERMUX_CACHE: ${{ github.workspace }}/.termux-cache
+        run: pnpm --filter @prometheus/desktop android-runtime
+
+      - name: Build APK
+        working-directory: apps/desktop
+        run: pnpm tauri android build --apk --target aarch64
+
+      # `tauri android build` leaves the APK unsigned; sign with a throwaway key so it installs.
+      - name: Sign with a throwaway key
+        run: |
+          apk=$(find apps/desktop/src-tauri/gen/android/app/build/outputs/apk -name '*-unsigned.apk' | head -n1)
+          [ -n "$apk" ] || { echo "no unsigned APK produced" >&2; exit 1; }
+          ks="$RUNNER_TEMP/test.p12"
+          pass=$(openssl rand -hex 16)
+          keytool -genkeypair -storetype PKCS12 -keystore "$ks" -storepass "$pass" -alias prometheus \
+            -keyalg RSA -keysize 2048 -validity 3650 -dname "CN=Prometheus Test"
+          bt="$ANDROID_HOME/build-tools/36.0.0"
+          "$bt/zipalign" -f -p 4 "$apk" aligned.apk
+          "$bt/apksigner" sign --ks "$ks" --ks-type PKCS12 --ks-pass "pass:$pass" --ks-key-alias prometheus \
+            --out Prometheus-android-arm64-test.apk aligned.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prometheus-android-apk
+          path: Prometheus-android-arm64-test.apk
+          retention-days: 14
