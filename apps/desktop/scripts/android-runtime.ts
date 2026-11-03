@@ -236,9 +236,20 @@ try {
 		'OPTS=()',
 		'OPTS+=("--link2symlink" "-0" "-r" "$PROMETHEUS_ROOTFS" "-b" "/dev" "-b" "/proc" "-b" "/sys")',
 		// DNS: the rootfs only knew public resolvers, so names on the phone's own LAN (router DNS, *.lan, NAS hostnames) never resolved.
-		// Put the Wi-Fi gateway first (routers forward and know local names); /proc/net/route gives it in little-endian hex.
-		'GW=""; while read -r _if dst gwh _rest; do if [ "$dst" = 00000000 ] && [ "${#gwh}" = 8 ] && [ "$gwh" != 00000000 ]; then a=${gwh#??????}; r=${gwh%??}; b=${r#????}; r=${r%??}; c=${r#??}; d=${r%??}; GW="$((16#$a)).$((16#$b)).$((16#$c)).$((16#$d))"; break; fi; done < /proc/net/route 2>/dev/null',
-		'if [ -n "$GW" ]; then printf "nameserver %s\\nnameserver 223.5.5.5\\nnameserver 8.8.8.8\\noptions timeout:2 attempts:2\\n" "$GW" > "$PROMETHEUS_ROOTFS/etc/resolv.conf" 2>/dev/null; fi',
+		// Android 10+ denies /proc/net/route and netlink sockets to apps, so the phone's gateway and resolvers have to come from the app:
+		// MainActivity writes "gateway\nresolvers" to $PROMETHEUS_DNS_FILE (see writeGuestDns); the two variables still work directly.
+		'PUBLIC_DNS="223.5.5.5 8.8.8.8 1.1.1.1"',
+		'if [ -z "$PROMETHEUS_GATEWAY" ] && [ -z "$PROMETHEUS_DNS" ] && [ -n "$PROMETHEUS_DNS_FILE" ] && [ -r "$PROMETHEUS_DNS_FILE" ]; then',
+		'  PROMETHEUS_GATEWAY=$(sed -n 1p "$PROMETHEUS_DNS_FILE" 2>/dev/null)',
+		'  PROMETHEUS_DNS=$(sed -n 2p "$PROMETHEUS_DNS_FILE" 2>/dev/null)',
+		'fi',
+		// Last resort: the route table. `2>/dev/null` must precede `<`, otherwise the shell prints the redirect error itself
+		// (redirections are applied left to right, and a failing `<` is reported before a later `2>/dev/null` takes effect).
+		'GW=""',
+		'if [ -z "$PROMETHEUS_GATEWAY" ] && [ -z "$PROMETHEUS_DNS" ]; then while read -r _if dst gwh _rest; do if [ "$dst" = 00000000 ] && [ "${#gwh}" = 8 ] && [ "$gwh" != 00000000 ]; then a=${gwh#??????}; r=${gwh%??}; b=${r#????}; r=${r%??}; c=${r#??}; d=${r%??}; GW="$((16#$a)).$((16#$b)).$((16#$c)).$((16#$d))"; break; fi; done 2>/dev/null < /proc/net/route; fi',
+		'DNS=""',
+		'if [ -n "$PROMETHEUS_GATEWAY" ] || [ -n "$PROMETHEUS_DNS" ]; then DNS="$PROMETHEUS_GATEWAY ${PROMETHEUS_DNS:-$PUBLIC_DNS}"; elif [ -n "$GW" ]; then DNS="$GW $PUBLIC_DNS"; fi',
+		'if [ -n "$DNS" ]; then { for ns in $(echo "$DNS" | tr "," " "); do echo "nameserver $ns"; done; echo "options timeout:2 attempts:2"; } > "$PROMETHEUS_ROOTFS/etc/resolv.conf" 2>/dev/null; fi',
 		// Android storage: only the cwd used to be bound, so absolute paths (/storage/emulated/0/..., /sdcard/...) did not exist in
 		// the guest, and /sdcard is just a symlink at the host root. Bind the tree and the alias; access is still the app's own uid.
 		'for d in /storage /sdcard; do [ -e "$d" ] && OPTS+=("-b" "$d"); done',
@@ -381,6 +392,18 @@ try {
 		if (/applySystemBarTheme\(true\)\n/.test(activity)) activity = activity.replace(/applySystemBarTheme\(true\)\n/, "applySystemBarTheme(true)\n    installBackBridge()\n");
 		else if (/startPrometheusService\(\)\n/.test(activity)) activity = activity.replace(/startPrometheusService\(\)\n/, "startPrometheusService()\n    installBackBridge()\n");
 		if (!/\n\s+installBackBridge\(\)\n/.test(activity)) throw new Error("could not patch MainActivity.kt (template changed?)");
+    }
+	// The guest's DNS servers are a third, independent patch: the phone's network is not visible from inside PRoot.
+	if (!activity.includes("writeGuestDns()\n")) {
+		activity = activity.replace(/\n\}\s*$/, () => `\n${guestDnsSource()}}\n`);
+		// After the service starts (and after the bars are set up, when that patch is present).
+		for (const anchor of [/applySystemBarTheme\(true\)\n/, /startPrometheusService\(\)\n/, /super\.onCreate\(savedInstanceState\)\n/]) {
+			if (!anchor.test(activity)) continue;
+			activity = activity.replace(anchor, (m) => `${m}    writeGuestDns()\n`);
+			break;
+		}
+		if (!activity.includes("writeGuestDns()\n")) throw new Error("could not patch MainActivity.kt (template changed?)");
+
 	}
 	writeFileSync(activityPath, activity);
 	console.log("patched MainActivity.kt");
@@ -632,6 +655,53 @@ function systemBarSource(): string {
     }
     // Behind the transparent bars: the app's own background, so no white strip appears in dark mode.
     w.setBackgroundDrawableResource(if (dark) android.R.color.black else android.R.color.white)
+  }
+`;
+}
+
+/**
+ * The guest's DNS servers, published by the app. Android 10+ denies `/proc/net/route` and netlink sockets to apps, so
+ * PRoot cannot discover the phone's gateway or resolvers by itself; `guestrun` reads them from `dns.txt` instead.
+ */
+function guestDnsSource(): string {
+	return `
+  override fun onResume() {
+    super.onResume()
+    // The network may have changed while the app was in the background; the guest re-reads the file per command.
+    writeGuestDns()
+  }
+
+  // Publish the gateway and the resolvers where the \`guestrun\` shim reads them: line 1 is the gateway (empty when
+  // unknown), line 2 the resolvers. Access to the network is still the app's own uid.
+  private fun writeGuestDns() {
+    try {
+      val lines = ArrayList<String>()
+      var gateway = 0
+      try {
+        gateway = getSystemService(android.net.wifi.WifiManager::class.java)?.dhcpInfo?.gateway ?: 0
+      } catch (_: Throwable) {
+      }
+      lines.add(
+        if (gateway == 0) "" else
+          (gateway and 0xff).toString() + "." + ((gateway shr 8) and 0xff).toString() + "." +
+            ((gateway shr 16) and 0xff).toString() + "." + ((gateway shr 24) and 0xff).toString(),
+      )
+      var servers: List<String> = emptyList()
+      try {
+        val cm = getSystemService(android.net.ConnectivityManager::class.java)
+        val network = cm?.activeNetwork
+        val props = if (network == null) null else cm?.getLinkProperties(network)
+        // resolv.conf has no syntax for an IPv6 scope id (fe80::1%wlan0), so drop it.
+        servers = props?.dnsServers?.mapNotNull { it.hostAddress?.substringBefore("%") } ?: emptyList()
+      } catch (_: Throwable) {
+      }
+      lines.add(servers.joinToString(" "))
+      val body = lines.joinToString("\\n")
+      // The backend's data dir is either the package root or its files dir depending on the host; write both.
+      java.io.File(dataDir, "dns.txt").writeText(body)
+      java.io.File(filesDir, "dns.txt").writeText(body)
+    } catch (_: Throwable) {
+    }
   }
 `;
 }
