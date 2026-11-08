@@ -18,7 +18,7 @@ import {
 import { parsePiModels, toProviderConfig } from "@prometheus/gateway";
 import { AppError, encodeError, type ModelInfo, type UsageStats } from "@prometheus/protocol";
 import { createPiRunner, type SubagentRuntime } from "@prometheus/subagents";
-import { skipPiImageAutoResize } from "../../images.ts";
+import { applyPiImageAutoResize } from "../../images.ts";
 import type { PermissionGate } from "../../permission-gate.ts";
 import { pluginBuilderExtension } from "../../plugin-tool.ts";
 import type { Runtime } from "../../runtime.ts";
@@ -239,9 +239,10 @@ export class PiRuntime implements AgentRuntime {
 		const cwd = sessionManager.getCwd();
 		const { permission: gate, ui: bridge, subagents, hooks } = init;
 		const settingsManager = SettingsManager.create(cwd, this.agentDir);
-		// PI auto-resize needs Photon WASM. A failed load drops every picture with
-		// "Image omitted: could not be resized". The web UI already shrinks attachments.
-		skipPiImageAutoResize(settingsManager);
+		// PI auto-resize needs Photon WASM; when it cannot load, a resize drops every picture with
+		// "Image omitted: could not be resized", so the pass is skipped. When it does load, keep it:
+		// it is what shrinks a 2-3 MB phone screenshot before it enters the context.
+		await applyPiImageAutoResize(settingsManager);
 		raiseRetryBudget(settingsManager);
 		const { session } = await createAgentSession({
 			cwd,

@@ -18,6 +18,30 @@ export function skipPiImageAutoResize(settings: { getImageAutoResize: () => bool
 	settings.getImageAutoResize = () => false;
 }
 
+/** 1×1 PNG: enough to load Photon and encode once, too small to cost anything. */
+const PROBE_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+let resizeProbe: Promise<boolean> | undefined;
+
+/**
+ * Whether PI's resize pass actually works here. Keeping it on is what stops a phone screenshot (2-3 MB PNG)
+ * from entering the context as megabytes of base64 — see `applyPiImageAutoResize`. Photon is WASM inside a
+ * worker, so it can be missing from a packaged server; when the probe fails the pass is skipped, because a
+ * failed resize replaces every picture with an "image omitted" note.
+ */
+export function piImageResizeWorks(): Promise<boolean> {
+	resizeProbe ??= import("@earendil-works/pi-coding-agent")
+		.then(({ resizeImage }) => resizeImage(PROBE_PNG, "image/png", { maxWidth: 4, maxHeight: 4, maxBytes: 2048, jpegQuality: 70 }))
+		.then((out) => out !== null)
+		// PI may not be installed at all (the host only loads it on demand); that is not a resize failure to report.
+		.catch(() => false);
+	return resizeProbe;
+}
+
+/** Keep PI's resize pass when the probe says it works, and only drop it when it would eat the picture. */
+export async function applyPiImageAutoResize(settings: { getImageAutoResize: () => boolean }): Promise<void> {
+	if (!(await piImageResizeWorks())) skipPiImageAutoResize(settings);
+}
+
 /** Reject what a provider would, before it is stored in the session and sent upstream. */
 export function checkImages(images: readonly ImageContent[] | undefined): void {
 	if (!images?.length) return;
