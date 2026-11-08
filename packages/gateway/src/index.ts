@@ -23,6 +23,8 @@ export interface PiChatModelConfig {
 	compat?: { forceAdaptiveThinking?: boolean };
 	/** `off: null` tells PI to omit `thinking` instead of sending `type: disabled`. */
 	thinkingLevelMap?: { off?: string | null; xhigh?: string | null; max?: string | null };
+	/** PI shrinks every picture to these bounds before it is stored and sent. */
+	inputLimits?: { images?: { resize?: { maxWidth?: number; maxHeight?: number; maxBytes?: number; jpegQuality?: number } } };
 }
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9-_]{0,47}$/;
@@ -102,6 +104,16 @@ export function normalizeProviderBaseUrl(format: GatewayFormat, baseUrl: string)
 	return trimmed;
 }
 
+/**
+ * Image budget a picture is shrunk to before it reaches the model (JPEG, longest edge, base64 bytes).
+ *
+ * OpenAI-compatible relays of text models bill an inline picture by the characters of its data URI rather
+ * than by tiles: a 2.3 MB phone screenshot (3.1 MB of base64) arrived as ~840k prompt tokens and forced a
+ * compaction on every read. At this budget the same screenshot costs tens of thousands of tokens and UI
+ * text stays legible.
+ */
+export const IMAGE_RESIZE = { maxWidth: 1600, maxHeight: 1600, maxBytes: 220 * 1024, jpegQuality: 76 } as const;
+
 function toModel(m: GatewayModel, format: GatewayFormat): PiChatModelConfig {
 	const model: PiChatModelConfig = {
 		id: m.id,
@@ -112,6 +124,8 @@ function toModel(m: GatewayModel, format: GatewayFormat): PiChatModelConfig {
 		contextWindow: m.contextWindow ?? 128_000,
 		maxTokens: m.maxTokens ?? 16_384,
 	};
+	// Only a vision model ever receives pictures, so only it needs the budget (PI applies it on read/attachment).
+	if (m.vision) model.inputLimits = { images: { resize: { ...IMAGE_RESIZE } } };
 	if (format === "anthropic-messages" && requiresAdaptiveThinking(m.id, m.name)) {
 		model.compat = { forceAdaptiveThinking: true };
 		// Claude 5.5 rejects `thinking.type=disabled`; omitting the field is the off mode.
