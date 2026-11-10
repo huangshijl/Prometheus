@@ -445,16 +445,10 @@ try {
 	}
 	// Download, status-bar height and keyboard insets live in the same bridge; older generated projects get them added.
 	if (!activity.includes("fun safeTop")) {
-		activity = activity.replace(/inner class SystemBarBridge \{
-/, () => `inner class SystemBarBridge {
-${bridgeExtraSource()}`);
-		activity = activity.replace(/
-\}\s*$/, () => `
-${insetsSource()}}
-`);
-		activity = activity.replace(/(super\.onWebViewCreate\(webView\)
-)/, () => `$1    installInsets(webView)
-`);
+		activity = activity.replace(/inner class SystemBarBridge \{\n/, () => `inner class SystemBarBridge {\n${bridgeExtraSource()}`);
+		activity = activity.replace(/\n\}\s*$/, () => `\n${insetsSource()}}`);
+		// A replacer function gets the match, not `$1`: the group cannot be referenced from a template literal.
+		activity = activity.replace(/(super\.onWebViewCreate\(webView\)\n)/, (m) => `${m}    installInsets(webView)\n`);
 		if (!activity.includes("fun safeTop") || !activity.includes("installInsets(webView)")) throw new Error("could not patch MainActivity.kt (template changed?)");
 	}
 	writeFileSync(activityPath, activity);
