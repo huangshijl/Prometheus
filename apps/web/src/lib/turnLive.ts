@@ -30,6 +30,18 @@ export type AssistantBlockLike = { type: string; text?: string; thinking?: strin
 export type AssistantMessageLike = { stopReason?: string; content: AssistantBlockLike[] };
 
 /**
+ * `group` index of the message that owns the turn's error box.
+ *
+ * A turn that keeps failing - a rate-limited provider retries six times - appends one assistant message per
+ * attempt and every one of them carries the same error. Rendering each box buries the conversation under
+ * identical red frames, so only the last attempt keeps one and every new failure replaces the one before it.
+ */
+export function lastErrorAt(group: readonly { stopReason?: string; errorMessage?: string }[]): number {
+	for (let i = group.length - 1; i >= 0; i--) if (group[i]?.stopReason === "error" && group[i]?.errorMessage) return i;
+	return -1;
+}
+
+/**
  * How a finished assistant turn is shown: intermediate tools/thinking fold away, one
  * closing answer stays. History pages often end on a tool call (no trailing text on
  * the last message); those must still fold, or lazy-loaded turns explode open.

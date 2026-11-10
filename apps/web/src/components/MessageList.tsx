@@ -13,7 +13,7 @@ import { speedTracker } from "../lib/speed.ts";
 import { defineMessages, useT } from "../lib/i18n.ts";
 import { imagesOf } from "../lib/images.ts";
 import { deleteMessage, editMessage, fetchToolResult, forkMessage, openFile, pluginActive, retryMessage, type ToolRun, toast, useStore } from "../lib/store.ts";
-import { assistantTurnLive, turnPresentation } from "../lib/turnLive.ts";
+import { assistantTurnLive, lastErrorAt, turnPresentation } from "../lib/turnLive.ts";
 import { ImageStrip } from "./ImageStrip.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { DelegationCard, delegationOf } from "./DelegationCard.tsx";
@@ -347,6 +347,7 @@ function AssistantBlock({
 	results,
 	mode = "all",
 	finalAt = -1,
+	showError = true,
 }: {
 	message: AssistantMessage;
 	live: boolean;
@@ -354,9 +355,15 @@ function AssistantBlock({
 	results: Map<string, ToolResultMessage>;
 	mode?: BlockMode;
 	finalAt?: number;
+	/** False for an attempt whose error is already shown by a later message of the same turn. */
+	showError?: boolean;
 }) {
 	const t = useT(M);
 	const last = message.content.length - 1;
+	const errorBox = mode !== "steps" && showError && message.stopReason === "error" && Boolean(message.errorMessage);
+	const stopped = mode !== "steps" && message.stopReason === "aborted";
+	// Nothing left to draw once its error box was folded away - and an empty block would still add a flex gap.
+	if (message.content.length === 0 && !errorBox && !stopped && !live) return null;
 	return (
 		<div className="space-y-3">
 			{message.content.map((block, i) => {
@@ -377,10 +384,10 @@ function AssistantBlock({
 				);
 			})}
 			{live && message.content.length === 0 && <Pondering />}
-			{mode !== "steps" && message.stopReason === "error" && message.errorMessage && (
+			{errorBox && (
 				<div className="rounded-lg border border-rose-400/25 bg-rose-400/8 px-3 py-2 min-w-0 text-sm break-words whitespace-pre-wrap text-rose-400 [overflow-wrap:anywhere]">{message.errorMessage}</div>
 			)}
-			{mode !== "steps" && message.stopReason === "aborted" && <div className="text-xs text-ink-500">{t("aborted")}</div>}
+			{stopped && <div className="text-xs text-ink-500">{t("aborted")}</div>}
 		</div>
 	);
 }
@@ -518,6 +525,10 @@ function TurnBody({
 	const [open, setOpen] = useState(false);
 	const view = turnPresentation(group.map((g) => g.message), live);
 	const { fold, finalMessage, finalAt, steps } = view;
+	// A turn that keeps failing (a 429 storm retries six times) writes one assistant message per attempt, each
+	// carrying the same error. Only the last one keeps its box, so a new failure replaces the one before it
+	// instead of stacking up a screenful of identical red frames.
+	const failedAt = lastErrorAt(group.map((g) => g.message));
 	const render = (mode: BlockMode) =>
 		// In "final" mode only the message that holds the answer is shown; the others would be empty boxes that each add a flex gap.
 		(mode === "final" ? group.slice(finalMessage, finalMessage + 1) : group).map((g, gi) => {
@@ -531,6 +542,7 @@ function TurnBody({
 					results={results}
 					mode={mode}
 					finalAt={groupIndex === finalMessage ? finalAt : -1}
+					showError={groupIndex === failedAt}
 				/>
 			);
 		});

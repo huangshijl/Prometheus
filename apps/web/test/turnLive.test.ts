@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assistantTurnLive, turnPresentation } from "../src/lib/turnLive.ts";
+import { assistantTurnLive, lastErrorAt, turnPresentation } from "../src/lib/turnLive.ts";
 
 describe("assistantTurnLive", () => {
 	it("does not treat the previous reply as live the moment a new prompt is sent", () => {
@@ -165,5 +165,28 @@ describe("turnPresentation", () => {
 				false,
 			).fold,
 		).toBe(false);
+	});
+});
+
+describe("lastErrorAt", () => {
+	const failed = (errorMessage?: string) => ({ stopReason: "error", errorMessage, content: [] });
+
+	it("keeps the box of a retry storm on the last attempt only", () => {
+		// Six attempts at a rate-limited provider, all carrying the same 429.
+		const group = [failed("429"), failed("429"), failed("429"), failed("429"), failed("429"), failed("429")];
+		expect(lastErrorAt(group)).toBe(5);
+	});
+
+	it("keeps the one earlier failure when the turn recovered", () => {
+		expect(lastErrorAt([failed("429"), { stopReason: "stop", content: [] }])).toBe(0);
+	});
+
+	it("has nothing to show when no attempt carries a message", () => {
+		expect(lastErrorAt([failed(), failed()])).toBe(-1);
+		expect(lastErrorAt([])).toBe(-1);
+	});
+
+	it("ignores an abort, which is not an error box", () => {
+		expect(lastErrorAt([{ stopReason: "aborted", content: [] }, failed("429")])).toBe(1);
 	});
 });
