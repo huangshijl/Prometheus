@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cacheRate, fmtTokens } from "../src/lib/format.ts";
+import { cacheRate, clockOf, fmtTokens } from "../src/lib/format.ts";
 
 describe("fmtTokens", () => {
 	it("switches units instead of showing 1000k", () => {
@@ -16,5 +16,23 @@ describe("cacheRate", () => {
 	it("is cacheRead share of prompt tokens", () => {
 		expect(cacheRate({ input: 100, cacheRead: 300, cacheWrite: 100 })).toBe(60);
 		expect(cacheRate({ input: 0, cacheRead: 0, cacheWrite: 0 })).toBeNull();
+	});
+});
+
+describe("clockOf", () => {
+	// Local time on purpose: a message is stamped in the reader's own clock, not in UTC.
+	const at = new Date(2026, 10, 11, 1, 20, 5).getTime();
+
+	it("shows hours, minutes and seconds below a message", () => {
+		expect(clockOf(at)).toBe("01:20:05");
+	});
+
+	it("adds the date only where it is asked for", () => {
+		expect(clockOf(at, true)).toBe("2026-11-11 01:20:05");
+	});
+
+	it("renders nothing for a message with no timestamp", () => {
+		expect(clockOf(undefined)).toBe("");
+		expect(clockOf(undefined, true)).toBe("");
 	});
 });

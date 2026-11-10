@@ -8,7 +8,7 @@ import { type AssistantMessage, type ChatMessage, type ImageContent, parseGoalDi
 import { FileText } from "lucide-react";
 import { DownloadButton } from "./FileDownloadButton.tsx";
 import { formatSize } from "../lib/attachments.ts";
-import { cacheRate, fmtPercent, fmtTokens } from "../lib/format.ts";
+import { cacheRate, clockOf, fmtPercent, fmtTokens } from "../lib/format.ts";
 import { speedTracker } from "../lib/speed.ts";
 import { defineMessages, useT } from "../lib/i18n.ts";
 import { imagesOf } from "../lib/images.ts";
@@ -383,7 +383,11 @@ function AssistantBlock({
 			})}
 			{live && message.content.length === 0 && <Pondering />}
 			{errorBox && (
-				<div className="rounded-lg border border-rose-400/25 bg-rose-400/8 px-3 py-2 min-w-0 text-sm break-words whitespace-pre-wrap text-rose-400 [overflow-wrap:anywhere]">{message.errorMessage}</div>
+				<div className="rounded-lg border border-rose-400/25 bg-rose-400/8 px-3 py-2 min-w-0 text-sm break-words whitespace-pre-wrap text-rose-400 [overflow-wrap:anywhere]">
+					{message.errorMessage}
+					{/* When the request failed, in the corner where a reader looks for the timestamp of an event. */}
+					<div className="mt-1 text-right font-mono text-[10.5px] text-rose-400/55">{clockOf(message.timestamp, true)}</div>
+				</div>
 			)}
 			{stopped && <div className="text-xs text-ink-500">{t("aborted")}</div>}
 		</div>
@@ -785,6 +789,7 @@ export function MessageList({
 							<div className="flex justify-end">
 								{editing ? <UserEditor index={i} initial={text} files={attachedFiles} skillRaw={skill?.raw} onClose={() => setEditingAt(null)} /> : <UserBubble text={text} images={userImages(m)} files={attachedFiles} skill={skill?.name} />}
 							</div>
+							{!editing && <div className="mt-1 flex justify-end pr-1.5 font-mono text-[10.5px] text-ink-600">{clockOf(m.timestamp, true)}</div>}
 							{!editing && <Actions index={i} text={text} canRetry={!streaming} align="end" onEdit={() => setEditingAt(i)} />}
 						</div>
 					);
@@ -814,6 +819,7 @@ export function MessageList({
 							<Avatar />
 							<div className="min-w-0 flex-1">
 								<TurnBody group={group} live={live} awaitingNext={awaitingNext} lastIndex={lastIndex} tools={tools} results={results} />
+								{!live && <div className="mt-1.5 font-mono text-[10.5px] text-ink-600">{clockOf(group[group.length - 1]?.message.timestamp, true)}</div>}
 								{!live && <TurnStats group={group} sessionId={sessionId} />}
 								{!live && (
 									<Actions
