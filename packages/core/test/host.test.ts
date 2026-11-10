@@ -5,9 +5,9 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { type SessionEvent, THINKING_LEVELS } from "@prometheus/protocol";
+import { type ChatMessage, type SessionEvent, type StopReason, THINKING_LEVELS } from "@prometheus/protocol";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { OPEN_TURNS, PAGE_TURNS, PrometheusHost, tailPage, turnStart } from "../src/host.ts";
+import { countedMessages, OPEN_TURNS, PAGE_TURNS, PrometheusHost, tailPage, turnStart } from "../src/host.ts";
 
 // PI's getAgentDir() reads this; it decides where sessions, auth.json, models.json and settings.json live.
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
@@ -502,5 +502,24 @@ describe("file.stat / file.read", () => {
 		expect(Buffer.concat(parts)).toEqual(payload);
 		await expect(host.call("file.read", { sessionId: id, path: join(root, "private.txt"), offset: 0, length: 10 })).rejects.toMatchObject({ code: "fileNotFound" });
 		await expect(host.call("file.stat", { sessionId: "no-such-session", path: "result.bin" })).resolves.toEqual({ exists: false });
+	});
+});
+
+describe("countedMessages", () => {
+	const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+	const ask = (n: number): ChatMessage => ({ role: "user", content: `q${n}`, timestamp: n });
+	const said = (n: number, stopReason: StopReason): ChatMessage => ({ role: "assistant", content: [], provider: "p", model: "m", usage, stopReason, timestamp: n });
+
+	it("leaves the retried failures out of the count the sidebar shows", () => {
+		// A rate-limited turn: one question, three failed attempts, then the answer.
+		expect(countedMessages([ask(1), said(2, "error"), said(3, "error"), said(4, "error"), said(5, "stop")])).toBe(2);
+	});
+
+	it("counts an ordinary conversation in full", () => {
+		expect(countedMessages([ask(1), said(2, "stop"), ask(3), said(4, "stop")])).toBe(4);
+	});
+
+	it("is zero for an empty chat", () => {
+		expect(countedMessages([])).toBe(0);
 	});
 });
