@@ -292,6 +292,11 @@ export function toast(message: string, level: Toast["level"] = "info"): void {
 	setTimeout(() => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })), level === "error" ? 8000 : 4000);
 }
 
+/** Drop a toast the moment it is clicked. Its own timeout would remove it later anyway, so no timer to cancel. */
+export function dismissToast(id: string): void {
+	set((s) => (s.toasts.some((t) => t.id === id) ? { toasts: s.toasts.filter((t) => t.id !== id) } : s));
+}
+
 function errorText(err: unknown): string {
 	return localizeError(err instanceof Error ? err.message : String(err));
 }
