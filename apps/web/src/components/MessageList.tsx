@@ -789,7 +789,7 @@ export function MessageList({
 							<div className="flex justify-end">
 								{editing ? <UserEditor index={i} initial={text} files={attachedFiles} skillRaw={skill?.raw} onClose={() => setEditingAt(null)} /> : <UserBubble text={text} images={userImages(m)} files={attachedFiles} skill={skill?.name} />}
 							</div>
-							{!editing && <div className="mt-1 flex justify-end pr-1.5 font-mono text-[10.5px] text-ink-600">{clockOf(m.timestamp)}</div>}
+							{!editing && <div className="mt-1 flex justify-end pr-1.5 font-mono text-[10.5px] text-ink-600">{clockOf(m.timestamp, true)}</div>}
 							{!editing && <Actions index={i} text={text} canRetry={!streaming} align="end" onEdit={() => setEditingAt(i)} />}
 						</div>
 					);
@@ -819,7 +819,7 @@ export function MessageList({
 							<Avatar />
 							<div className="min-w-0 flex-1">
 								<TurnBody group={group} live={live} awaitingNext={awaitingNext} lastIndex={lastIndex} tools={tools} results={results} />
-								{!live && <div className="mt-1.5 font-mono text-[10.5px] text-ink-600">{clockOf(group[group.length - 1]?.message.timestamp)}</div>}
+								{!live && <div className="mt-1.5 font-mono text-[10.5px] text-ink-600">{clockOf(group[group.length - 1]?.message.timestamp, true)}</div>}
 								{!live && <TurnStats group={group} sessionId={sessionId} />}
 								{!live && (
 									<Actions
