@@ -137,6 +137,14 @@ export const PAGE_BYTES = 160 * 1024;
  * The slimmed messages of whole turns ending before `end`, newest last: at most `turns` turns, and stopping at the first
  * turn boundary past `budget` bytes of JSON. Always at least one turn, so a page is never empty while there is history.
  */
+/**
+ * Messages a conversation counts as its own. A failed attempt is one the model retried, not something either side
+ * said, so it stays out: a rate-limited turn would otherwise add a dozen "messages" to the sidebar that nobody typed.
+ */
+export function countedMessages(messages: readonly ChatMessage[]): number {
+	return messages.filter((m) => !(m.role === "assistant" && m.stopReason === "error")).length;
+}
+
 export function tailPage(messages: readonly ChatMessage[], end: number, turns: number, budget = PAGE_BYTES): { messages: ChatMessage[]; offset: number } {
 	const newestFirst: ChatMessage[] = [];
 	let bytes = 0;
@@ -448,7 +456,7 @@ ${extras.map((p) => `- ${p}`).join("\n")}` }, guidelines: [] } };
 		const ref = live.session.ref();
 		if (ref.runtime === "pi") return;
 		const state = live.session.snapshotState();
-		this.index.patch(id, { name: state.name, modified: new Date().toISOString(), messageCount: state.messages.length, firstMessage: titleWithoutNote(firstUserText(state.messages)).slice(0, 200) });
+		this.index.patch(id, { name: state.name, modified: new Date().toISOString(), messageCount: countedMessages(state.messages), firstMessage: titleWithoutNote(firstUserText(state.messages)).slice(0, 200) });
 	}
 
 	private async createExternal(kind: RuntimeKind, agent: string | undefined, dir: string, gateway: GatewayChoice | undefined, seed?: ChatMessage[]): Promise<LiveSession> {
@@ -766,7 +774,7 @@ ${extras.map((p) => `- ${p}`).join("\n")}` }, guidelines: [] } };
 				cwd: state.cwd,
 				created: now,
 				modified: now,
-				messageCount: state.messages.length,
+				messageCount: countedMessages(state.messages),
 				firstMessage: titleWithoutNote(firstUserText(state.messages)).slice(0, 200),
 				live: true,
 				running: true,
@@ -798,20 +806,25 @@ ${extras.map((p) => `- ${p}`).join("\n")}` }, guidelines: [] } };
 		}
 		await this.workspaces.ensure(external.map((e) => ({ path: this.worktrees.rootOf(e.cwd), modified: e.modified })));
 		return [...external, ...infos
-			.map((info) => ({
-				id: info.ref.id,
-				name: info.name,
-				cwd: info.cwd,
-				created: info.created,
-				modified: info.modified,
-				messageCount: info.messageCount,
-				firstMessage: titleWithoutNote(imageOnlyTitle(info.firstMessage, info.messageCount)).slice(0, 200),
-				live: this.live.has(info.ref.id),
-				running: this.live.get(info.ref.id)?.session.isStreaming ?? false,
-				archived: archived.has(info.ref.id),
-				workspaceId: info.cwd ? workspaceId(this.worktrees.rootOf(info.cwd)) : "",
-				...this.worktreeField(info.ref.id),
-			})), ...unsaved]
+			.map((info) => {
+				// PI counts every attempt in its own summary, retries included; an open chat can be asked to count properly.
+				const live = this.live.get(info.ref.id);
+				const count = live ? countedMessages(live.session.snapshotState().messages) : info.messageCount;
+				return {
+					id: info.ref.id,
+					name: info.name,
+					cwd: info.cwd,
+					created: info.created,
+					modified: info.modified,
+					messageCount: count,
+					firstMessage: titleWithoutNote(imageOnlyTitle(info.firstMessage, count)).slice(0, 200),
+					live: Boolean(live),
+					running: live?.session.isStreaming ?? false,
+					archived: archived.has(info.ref.id),
+					workspaceId: info.cwd ? workspaceId(this.worktrees.rootOf(info.cwd)) : "",
+					...this.worktreeField(info.ref.id),
+				};
+			}), ...unsaved]
 			.sort((a, b) => b.modified.localeCompare(a.modified));
 	}
 
@@ -1026,7 +1039,22 @@ ${extras.map((p) => `- ${p}`).join("\n")}` }, guidelines: [] } };
 	}
 
 	private hostSettings(): HostSettings {
-		return { autoCompaction: this.pi?.autoCompaction() ?? true, workspaceRoot: this.workspaceRoot(), defaultAgent: this.defaultAgent(), defaultPermission: this.defaultPermission(), defaultThinking: this.defaultThinking(), goalTurns: this.runtime.config.get().goalTurns || GOAL_DEFAULT_TURNS, compactPercent: this.compactPercent(), worktreeMode: this.worktreeMode(), worktreeDefault: this.runtime.config.get().worktreeDefault, worktreeStrategy: this.worktreeStrategy() };
+		return {
+			autoCompaction: this.pi?.autoCompaction() ?? true,
+			retryEnabled: this.pi?.retryEnabled() ?? true,
+			retryExtension: this.pi?.retryExtension() ?? false,
+			retryIntervalMs: this.runtime.config.get().retryIntervalMs,
+			retryJitterPercent: this.runtime.config.get().retryJitterPercent,
+			workspaceRoot: this.workspaceRoot(),
+			defaultAgent: this.defaultAgent(),
+			defaultPermission: this.defaultPermission(),
+			defaultThinking: this.defaultThinking(),
+			goalTurns: this.runtime.config.get().goalTurns || GOAL_DEFAULT_TURNS,
+			compactPercent: this.compactPercent(),
+			worktreeMode: this.worktreeMode(),
+			worktreeDefault: this.runtime.config.get().worktreeDefault,
+			worktreeStrategy: this.worktreeStrategy(),
+		};
 	}
 
 	/** The permission mode new chats start in; unknown values (a hand-edited config) fall back to asking first. */
@@ -1296,12 +1324,21 @@ ${extras.map((p) => `- ${p}`).join("\n")}` }, guidelines: [] } };
 		"fs.mkdir": ({ parent, name }) => this.createDir(parent, name),
 
 		"settings.get": () => this.hostSettings(),
-		"settings.set": async ({ autoCompaction, workspaceRoot, defaultAgent, defaultPermission, defaultThinking, goalTurns, compactPercent, worktreeMode, worktreeDefault, worktreeStrategy }) => {
+		"settings.set": async ({ autoCompaction, retryEnabled, retryExtension, retryIntervalMs, retryJitterPercent, workspaceRoot, defaultAgent, defaultPermission, defaultThinking, goalTurns, compactPercent, worktreeMode, worktreeDefault, worktreeStrategy }) => {
 			if (typeof autoCompaction === "boolean") {
 				await this.pi?.setAutoCompaction(autoCompaction);
 				// Live sessions cache their own SettingsManager.
 				for (const { session } of this.live.values()) session.setAutoCompaction?.(autoCompaction);
 			}
+			if (typeof retryEnabled === "boolean") {
+				await this.pi?.setRetryEnabled(retryEnabled);
+				for (const { session } of this.live.values()) session.setRetryEnabled?.(retryEnabled);
+			}
+			// The retry extension reads this setting on every event, so running sessions pick the change up as well.
+			if (typeof retryExtension === "boolean") await this.pi?.setRetryExtension(retryExtension);
+			// Pacing is read per attempt too; a value out of range is clamped rather than rejected.
+			if (typeof retryIntervalMs === "number") await this.runtime.config.setRetryIntervalMs(retryIntervalMs);
+			if (typeof retryJitterPercent === "number") await this.runtime.config.setRetryJitterPercent(retryJitterPercent);
 			if (typeof workspaceRoot === "string") {
 				const next = workspaceRoot.trim();
 				if (next && (!existsSync(next) || !statSync(next).isDirectory())) throw new AppError("dirNotFound", { dir: next });

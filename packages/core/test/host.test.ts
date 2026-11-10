@@ -5,9 +5,9 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { type SessionEvent, THINKING_LEVELS } from "@prometheus/protocol";
+import { type ChatMessage, type SessionEvent, type StopReason, THINKING_LEVELS } from "@prometheus/protocol";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { OPEN_TURNS, PAGE_TURNS, PrometheusHost, tailPage, turnStart } from "../src/host.ts";
+import { countedMessages, OPEN_TURNS, PAGE_TURNS, PrometheusHost, tailPage, turnStart } from "../src/host.ts";
 
 // PI's getAgentDir() reads this; it decides where sessions, auth.json, models.json and settings.json live.
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
@@ -296,6 +296,23 @@ describe("PrometheusHost RPC (characterization)", () => {
 		expect((await host.call("settings.set", { compactPercent: 95 })).compactPercent).toBe(95);
 	});
 
+	it("settings.set stores the two retry switches and the pacing, clamping what is out of range", async () => {
+		// PI's own retry loop is on by default and lives in PI's settings.json, like auto-compaction.
+		expect((await host.call("settings.get", {})).retryEnabled).toBe(true);
+		expect((await host.call("settings.set", { retryEnabled: false })).retryEnabled).toBe(false);
+		expect((await host.call("settings.get", {})).retryEnabled).toBe(false);
+		// The app's own retry extension is off until asked for, and lives in Prometheus' config.
+		expect((await host.call("settings.get", {})).retryExtension).toBe(false);
+		expect((await host.call("settings.set", { retryExtension: true })).retryExtension).toBe(true);
+		expect((await host.call("settings.get", {})).retryExtension).toBe(true);
+		// 500 ms is the floor and the jitter cannot exceed 100%.
+		expect((await host.call("settings.set", { retryIntervalMs: 120 })).retryIntervalMs).toBe(500);
+		expect((await host.call("settings.get", {})).retryIntervalMs).toBe(500);
+		expect((await host.call("settings.set", { retryJitterPercent: 250 })).retryJitterPercent).toBe(100);
+		expect((await host.call("settings.set", { retryIntervalMs: 1500, retryJitterPercent: 30 })).retryIntervalMs).toBe(1500);
+		expect((await host.call("settings.get", {})).retryJitterPercent).toBe(30);
+	});
+
 	it("session.delete removes a saved session and its file", async () => {
 		const seeded = seedSession("delete me");
 		await host.call("session.open", { sessionId: seeded.id });
@@ -502,5 +519,24 @@ describe("file.stat / file.read", () => {
 		expect(Buffer.concat(parts)).toEqual(payload);
 		await expect(host.call("file.read", { sessionId: id, path: join(root, "private.txt"), offset: 0, length: 10 })).rejects.toMatchObject({ code: "fileNotFound" });
 		await expect(host.call("file.stat", { sessionId: "no-such-session", path: "result.bin" })).resolves.toEqual({ exists: false });
+	});
+});
+
+describe("countedMessages", () => {
+	const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+	const ask = (n: number): ChatMessage => ({ role: "user", content: `q${n}`, timestamp: n });
+	const said = (n: number, stopReason: StopReason): ChatMessage => ({ role: "assistant", content: [], provider: "p", model: "m", usage, stopReason, timestamp: n });
+
+	it("leaves the retried failures out of the count the sidebar shows", () => {
+		// A rate-limited turn: one question, three failed attempts, then the answer.
+		expect(countedMessages([ask(1), said(2, "error"), said(3, "error"), said(4, "error"), said(5, "stop")])).toBe(2);
+	});
+
+	it("counts an ordinary conversation in full", () => {
+		expect(countedMessages([ask(1), said(2, "stop"), ask(3), said(4, "stop")])).toBe(4);
+	});
+
+	it("is zero for an empty chat", () => {
+		expect(countedMessages([])).toBe(0);
 	});
 });

@@ -1,4 +1,4 @@
-import { MAX_COMPACT_PERCENT, MIN_COMPACT_PERCENT } from "@prometheus/protocol";
+import { DEFAULT_RETRY_INTERVAL_MS, DEFAULT_RETRY_JITTER_PERCENT, MAX_COMPACT_PERCENT, MAX_RETRY_INTERVAL_MS, MAX_RETRY_JITTER_PERCENT, MIN_COMPACT_PERCENT, MIN_RETRY_INTERVAL_MS, MIN_RETRY_JITTER_PERCENT } from "@prometheus/protocol";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -41,6 +41,12 @@ export interface PrometheusConfig {
 	goalTurns: number;
 	/** Context fill, in percent, at which a long conversation is auto-compacted; 0 means the built-in default. */
 	compactPercent: number;
+	/** Whether the app's own retry extension resends failed model calls (see core/src/agent/pi/api-error-retry.ts). */
+	retryExtension: boolean;
+	/** Base interval of that retry loop, in ms; never below half a second. */
+	retryIntervalMs: number;
+	/** Upper bound of the jitter, in percent; the delay only ever grows, never shrinks. */
+	retryJitterPercent: number;
 	/** Whether new chats get their own git worktree: "off", "ask" or "on"; "" means the built-in "ask". */
 	worktreeMode: string;
 	/** With "ask": whether the new-chat switch starts on. */
@@ -64,7 +70,18 @@ export function defaultDataDir(): string {
 	return process.env.PROMETHEUS_HOME || join(homedir(), ".prometheus");
 }
 
-const EMPTY: PrometheusConfig = { gateways: [], agents: [], plugins: [], disabledPlugins: [], pluginSettings: {}, network: normalizeNetwork(undefined), workspaceRoot: "", defaultAgent: "", defaultPermission: "", defaultThinking: "", goalTurns: 0, compactPercent: 0, worktreeMode: "", worktreeDefault: true, worktreeStrategy: "" };
+const EMPTY: PrometheusConfig = { gateways: [], agents: [], plugins: [], disabledPlugins: [], pluginSettings: {}, network: normalizeNetwork(undefined), workspaceRoot: "", defaultAgent: "", defaultPermission: "", defaultThinking: "", goalTurns: 0, compactPercent: 0, retryExtension: false, retryIntervalMs: DEFAULT_RETRY_INTERVAL_MS, retryJitterPercent: DEFAULT_RETRY_JITTER_PERCENT, worktreeMode: "", worktreeDefault: true, worktreeStrategy: "" };
+
+/** A retry pacing value, clamped into its allowed range; anything unreadable falls back to the default. */
+function paceMs(raw: unknown): number {
+	const n = Number(raw);
+	return Number.isFinite(n) ? Math.min(MAX_RETRY_INTERVAL_MS, Math.max(MIN_RETRY_INTERVAL_MS, Math.round(n))) : DEFAULT_RETRY_INTERVAL_MS;
+}
+
+function jitterPercent(raw: unknown): number {
+	const n = Number(raw);
+	return Number.isFinite(n) ? Math.min(MAX_RETRY_JITTER_PERCENT, Math.max(MIN_RETRY_JITTER_PERCENT, Math.round(n))) : DEFAULT_RETRY_JITTER_PERCENT;
+}
 
 /** config.json holds API keys, so it is always written owner-only. */
 export class ConfigStore {
@@ -102,6 +119,9 @@ export class ConfigStore {
 					typeof raw.compactPercent === "number" && Number.isFinite(raw.compactPercent) && raw.compactPercent >= MIN_COMPACT_PERCENT && raw.compactPercent <= MAX_COMPACT_PERCENT
 						? Math.round(raw.compactPercent)
 						: 0,
+				retryExtension: raw.retryExtension === true,
+				retryIntervalMs: paceMs(raw.retryIntervalMs),
+				retryJitterPercent: jitterPercent(raw.retryJitterPercent),
 			};
 		} catch (err) {
 			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
@@ -148,6 +168,24 @@ export class ConfigStore {
 	/** Compaction threshold in percent; 0 (or anything out of range) restores the built-in default. */
 	async setCompactPercent(percent: number): Promise<void> {
 		this.config.compactPercent = Number.isFinite(percent) && percent >= MIN_COMPACT_PERCENT && percent <= MAX_COMPACT_PERCENT ? Math.round(percent) : 0;
+		await this.persist();
+	}
+
+	/** The app's own retry loop; off unless the user turns it on, since it retries a failing call indefinitely. */
+	async setRetryExtension(enabled: boolean): Promise<void> {
+		this.config.retryExtension = enabled === true;
+		await this.persist();
+	}
+
+	/** Retry pacing in ms; 500 is the floor, so a shorter interval is raised rather than silently ignored. */
+	async setRetryIntervalMs(ms: number): Promise<void> {
+		this.config.retryIntervalMs = paceMs(ms);
+		await this.persist();
+	}
+
+	/** Jitter upper bound in percent; the delay only grows, so this can never make a retry come earlier. */
+	async setRetryJitterPercent(percent: number): Promise<void> {
+		this.config.retryJitterPercent = jitterPercent(percent);
 		await this.persist();
 	}
 
