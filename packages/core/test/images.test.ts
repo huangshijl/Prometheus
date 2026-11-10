@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkImages, imageOnlyTitle, MAX_IMAGES, skipPiImageAutoResize } from "../src/images.ts";
+import { applyPiImageAutoResize, checkImages, imageOnlyTitle, MAX_IMAGES, piImageResizeWorks, skipPiImageAutoResize } from "../src/images.ts";
 
 describe("imageOnlyTitle", () => {
 	it("replaces PI's empty placeholder only for chats that have messages", () => {
@@ -21,6 +21,16 @@ describe("skipPiImageAutoResize", () => {
 		};
 		skipPiImageAutoResize(settings);
 		expect(settings.getImageAutoResize()).toBe(false);
+	});
+});
+
+describe("applyPiImageAutoResize", () => {
+	it("keeps the resize pass exactly when the Photon probe works", async () => {
+		const works = await piImageResizeWorks();
+		const settings = { getImageAutoResize: () => true };
+		await applyPiImageAutoResize(settings);
+		// Resize on = screenshots get shrunk; probe failed = the pass would eat the picture, so it stays off.
+		expect(settings.getImageAutoResize()).toBe(works);
 	});
 });
 
