@@ -27,6 +27,8 @@ import type { AgentRuntime, GatewayChoice, NativeSessionInfo, ResumeInit, Runtim
 import { PendingForks } from "./forks.ts";
 import { applyCompactPercent, DEFAULT_COMPACT_PERCENT } from "./compaction.ts";
 import { raiseRetryBudget } from "./retry.ts";
+import { apiErrorRetryExtension } from "./api-error-retry.ts";
+import { clampRetryInterval, clampRetryJitter, type RetryTuning } from "./retry-tuning.ts";
 import { PiRuntimeSession } from "./pi-session.ts";
 
 // Mirrors PI's CLI built-ins (main() adds them for the TUI); names keep `builtin:<name>` settings working.
@@ -175,6 +177,31 @@ export class PiRuntime implements AgentRuntime {
 		await this.settings().flush();
 	}
 
+	/** PI's own retry loop, shared with the TUI through PI's settings.json. */
+	retryEnabled(): boolean {
+		return this.settings().getRetryEnabled();
+	}
+
+	async setRetryEnabled(enabled: boolean): Promise<void> {
+		this.settings().setRetryEnabled(enabled);
+		await this.settings().flush();
+	}
+
+	/** The app's own retry loop (see api-error-retry.ts). */
+	retryExtension(): boolean {
+		return this.runtime.config.get().retryExtension === true;
+	}
+
+	async setRetryExtension(enabled: boolean): Promise<void> {
+		await this.runtime.config.setRetryExtension(enabled);
+	}
+
+	/** Pacing of the app's own retry loop, read from the app's config (PI's settings.json only holds the switch). */
+	retryTuning(): RetryTuning {
+		const config = this.runtime.config.get();
+		return { intervalMs: clampRetryInterval(config.retryIntervalMs), jitterPercent: clampRetryJitter(config.retryJitterPercent) };
+	}
+
 	// ---------- sessions ----------
 
 	/** One loader per session: its extension runtime is invalidated when that session is disposed or reloaded, so sharing it would break sibling sessions. */
@@ -183,7 +210,15 @@ export class PiRuntime implements AgentRuntime {
 			cwd,
 			agentDir: this.agentDir,
 			// PI's own built-ins (MCP client, codemode, tool search) come first, as in the TUI.
-			extensionFactories: [...builtInExtensions, this.runtime.dynamicExtension(), pluginBuilderExtension(this.runtime.plugins), gate.extension(), ...(subagents ? [subagents.extension()] : [])],
+			// The retry extension is always registered and gates itself on the live setting, so flipping the switch needs no reload.
+			extensionFactories: [
+				...builtInExtensions,
+				this.runtime.dynamicExtension(),
+				pluginBuilderExtension(this.runtime.plugins),
+				gate.extension(),
+				{ name: "api-error-retry", factory: apiErrorRetryExtension(() => this.retryExtension(), () => this.retryTuning()) },
+				...(subagents ? [subagents.extension()] : []),
+			],
 			// The app has its own `subagent` tool; the pi-subagents package would register a second one under the same name.
 			extensionsOverride: (base) => ({ ...base, extensions: base.extensions.filter((x) => !/pi-subagents/i.test(`${x.path} ${x.resolvedPath}`)) }),
 		});

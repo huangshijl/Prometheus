@@ -28,7 +28,7 @@ import { SubagentsView } from "./SubagentsView.tsx";
 import { LogsView } from "./LogsView.tsx";
 import { VeilView } from "./VeilView.tsx";
 import { SkillsView } from "./SkillsView.tsx";
-import { DEFAULT_COMPACT_PERCENT, MAX_COMPACT_PERCENT, MIN_COMPACT_PERCENT, PERMISSION_MODES, type PermissionMode, THINKING_LEVELS, type ThinkingLevel, type WorktreeOverride, type WorktreeStrategy } from "@prometheus/protocol";
+import { DEFAULT_COMPACT_PERCENT, DEFAULT_RETRY_INTERVAL_MS, DEFAULT_RETRY_JITTER_PERCENT, MAX_COMPACT_PERCENT, MAX_RETRY_INTERVAL_MS, MAX_RETRY_JITTER_PERCENT, MIN_COMPACT_PERCENT, MIN_RETRY_INTERVAL_MS, MIN_RETRY_JITTER_PERCENT, PERMISSION_MODES, type PermissionMode, THINKING_LEVELS, type ThinkingLevel, type WorktreeOverride, type WorktreeStrategy } from "@prometheus/protocol";
 import { Button, PageHeader, Select } from "./ui.tsx";
 import { UsageView } from "./UsageView.tsx";
 import { ChannelsSettings } from "./ChannelsSettings.tsx";
@@ -120,6 +120,15 @@ const M = defineMessages({
 		recycleDays: "会话回收",
 		recycleDaysHint: "超过设定天数未活动的会话会自动从左侧列表移除以减轻负担（文件保留，不会删除）。0 表示不回收。",
 		days: "天",
+		retryEnabled: "失败自动重试",
+		retryEnabledHint: "调用模型出错时，PI 自己按退避策略重试几次。与 PI TUI 共享此设置。",
+		retryExtension: "失败时一直重试",
+		retryExtensionHint: "PI 自带的几次重试也用完后，Prometheus 重发同一个请求，直到成功或你手动停止。重试期间失败的回复不会进入上下文，重启会话后也不会冒出来。",
+		retryInterval: "重试间隔",
+		retryIntervalHint: "两次重试之间至少等这么久，最低 500 毫秒。",
+		retryJitter: "浮动上限",
+		retryJitterHint: "只往上浮动，不会更早：实际会等 {min}–{max} 毫秒。",
+		retryUnitMs: "毫秒",
 		chatWidth: "对话宽度",
 		chatWidthHint: "也可以在对话页面里拖动内容两侧的边缘调整，双击边缘恢复自适应。",
 		motion: "界面动效",
@@ -236,6 +245,15 @@ const M = defineMessages({
 		recycleDays: "Session recycling",
 		recycleDaysHint: "Chats idle for more than this many days drop out of the sidebar list to lighten the load (files are kept, nothing is deleted). 0 turns it off.",
 		days: "days",
+		retryEnabled: "Retry failed calls",
+		retryEnabledHint: "PI retries a failed model call a few times with backoff. Shared with the PI TUI.",
+		retryExtension: "Keep retrying until it works",
+		retryExtensionHint: "Once PI's own attempts run out, Prometheus resends the same request until it succeeds or you stop it. Failed replies stay out of the context, even after a restart.",
+		retryInterval: "Retry interval",
+		retryIntervalHint: "How long to wait between attempts. 500 ms is the floor.",
+		retryJitter: "Jitter ceiling",
+		retryJitterHint: "Only ever added, never subtracted: the wait becomes {min}–{max} ms.",
+		retryUnitMs: "ms",
 		chatWidth: "Chat width",
 		chatWidthHint: "You can also drag the edges beside the chat column; double-click an edge to go back to automatic.",
 		motion: "Interface motion",
@@ -622,6 +640,59 @@ function CompactPercentRow() {
 }
 
 /**
+ * Pacing of the app's own retry loop. The jitter only adds, so "1000 ms + 20%" means 1000-1200 ms, never 800.
+ */
+function RetryPacingRows() {
+	const t = useT(M);
+	const host = useStore((s) => s.hostSettings);
+	const [draft, setDraft] = useState<{ interval?: string; jitter?: string }>({});
+	// Pacing only exists for the retry loop that is actually on.
+	if (!host?.retryExtension) return null;
+	const interval = host.retryIntervalMs ?? DEFAULT_RETRY_INTERVAL_MS;
+	const jitter = host.retryJitterPercent ?? DEFAULT_RETRY_JITTER_PERCENT;
+	const commit = (which: "interval" | "jitter", raw: string) => {
+		const n = Math.round(Number(raw));
+		setDraft((d) => ({ ...d, [which]: undefined }));
+		if (!Number.isFinite(n)) return;
+		const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+		void updateHostSettings(which === "interval" ? { retryIntervalMs: clamp(n, MIN_RETRY_INTERVAL_MS, MAX_RETRY_INTERVAL_MS) } : { retryJitterPercent: clamp(n, MIN_RETRY_JITTER_PERCENT, MAX_RETRY_JITTER_PERCENT) });
+	};
+	const box = (which: "interval" | "jitter") => {
+		const spec = which === "interval" ? { lo: MIN_RETRY_INTERVAL_MS, hi: MAX_RETRY_INTERVAL_MS, step: 100 } : { lo: MIN_RETRY_JITTER_PERCENT, hi: MAX_RETRY_JITTER_PERCENT, step: 5 };
+		return (
+			<input
+				type="number"
+				min={spec.lo}
+				max={spec.hi}
+				step={spec.step}
+				value={draft[which] ?? String(which === "interval" ? interval : jitter)}
+				onChange={(e) => setDraft((d) => ({ ...d, [which]: e.target.value }))}
+				onBlur={(e) => commit(which, e.target.value)}
+				onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+				aria-label={which === "interval" ? t("retryInterval") : t("retryJitter")}
+				className="w-24 rounded-lg border border-ink-700 bg-ink-900 px-2.5 py-1.5 font-mono text-sm text-ink-100 outline-none focus:border-ember-500"
+			/>
+		);
+	};
+	return (
+		<>
+			<Row label={t("retryInterval")} hint={t("retryIntervalHint")}>
+				<div className="flex items-center gap-2">
+					{box("interval")}
+					<span className="text-xs text-ink-400">{t("retryUnitMs")}</span>
+				</div>
+			</Row>
+			<Row label={t("retryJitter")} hint={t("retryJitterHint", { min: interval, max: Math.round(interval * (1 + jitter / 100)) })}>
+				<div className="flex items-center gap-2">
+					{box("jitter")}
+					<span className="text-xs text-ink-400">%</span>
+				</div>
+			</Row>
+		</>
+	);
+}
+
+/**
  * The thinking level new chats start at. Levels are per model, so the list is the union of what the available models
  * offer; a chat whose model lacks the configured level keeps that model's own default (decided on the server).
  */
@@ -799,6 +870,13 @@ function ChatSettings() {
 						</Row>
 						<CompactPercentRow />
 						<RecycleDaysRow />
+						<Row label={t("retryEnabled")} hint={t("retryEnabledHint")}>
+							<Toggle checked={host?.retryEnabled ?? true} disabled={!host} onChange={(v) => void updateHostSettings({ retryEnabled: v })} />
+						</Row>
+						<Row label={t("retryExtension")} hint={t("retryExtensionHint")}>
+							<Toggle checked={host?.retryExtension ?? false} disabled={!host} onChange={(v) => void updateHostSettings({ retryExtension: v })} />
+						</Row>
+						<RetryPacingRows />
 						<Row label={t("sendMode")} hint={t("sendModeHint")}>
 							<Segmented<SendMode>
 								value={prefs.sendMode}

@@ -220,6 +220,11 @@ export class PiRuntimeSession implements RuntimeSession {
 		this.session.setAutoCompactionEnabled(enabled);
 	}
 
+	/** Memory-only, like the compaction override: the shared settings.json is written by PiRuntime. */
+	setRetryEnabled(enabled: boolean): void {
+		this.session.settingsManager.applyOverrides({ retry: { enabled } });
+	}
+
 	refreshTools(): Promise<void> {
 		return this.session.reload();
 	}
