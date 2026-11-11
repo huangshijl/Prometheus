@@ -152,11 +152,14 @@ jobs:
           test -f "$res/mipmap-anydpi-v26/ic_launcher.xml"
           test -f "$res/mipmap-xxxhdpi/ic_launcher_foreground.png"
 
-      - name: Cache pinned Termux packages
+      - name: Cache Termux packages
         uses: actions/cache@v4
         with:
           path: .termux-cache
-          key: termux-${{ hashFiles('apps/desktop/scripts/android-termux.lock.json') }}
+          # Versions float with the Termux index, so the entry is keyed by run and restored from the newest earlier one:
+          # a key derived from the lock file would stop changing and never pick up the packages that appeared since.
+          key: termux-${{ github.run_id }}
+          restore-keys: termux-
 
       - name: Add Node, npm, git and the server to the project
         env:
