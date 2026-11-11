@@ -16,8 +16,8 @@
 		"sha256": "623d84855e176f3f2a415d24c0e1d2f529356f4b5439bb3313e6d7ff0da4585c"
 	},
 	"ca-certificates": {
-		"filename": "pool/main/c/ca-certificates/ca-certificates_1:2026.11.05_all.deb",
-		"sha256": "4cf292d604e14ed2878847eec2acea7c24ba10f598a5c5cd75dfc5e3750717da"
+		"filename": "pool/main/c/ca-certificates/ca-certificates_1:2026.11.05-1_all.deb",
+		"sha256": "12fc350fc5ad638338b06b04835bce897615f8c93f96d30ac396cdb39b850c6b"
 	},
 	"coreutils": {
 		"filename": "pool/main/c/coreutils/coreutils_9.12_aarch64.deb",
@@ -48,8 +48,8 @@
 		"sha256": "4f82f448d969e7f874d9d627af063a2da713d4c6540039a402cefbfc4976af1f"
 	},
 	"git": {
-		"filename": "pool/main/g/git/git_2.56.0_aarch64.deb",
-		"sha256": "dcdd22c5fdf7bdb5b825a03a17441d43858ed8515fea57fbb37eb42e733ca82f"
+		"filename": "pool/main/g/git/git_2.56.1_aarch64.deb",
+		"sha256": "3343f56fc99e2f0631a553a39789769495435cb07b6ffb3c71a7fcb7bd561e95"
 	},
 	"grep": {
 		"filename": "pool/main/g/grep/grep_3.12-3_aarch64.deb",
@@ -116,12 +116,12 @@
 		"sha256": "5a3c1325638946ca212ddcb89bffb2c4459b4c90757d6e69f820e176534037fa"
 	},
 	"libiconv": {
-		"filename": "pool/main/libi/libiconv/libiconv_1.19_aarch64.deb",
-		"sha256": "fe9481b1dc101c6c3552943f25435109fd522aecc615ae49594f9fbee863bb37"
+		"filename": "pool/main/libi/libiconv/libiconv_1.19.1_aarch64.deb",
+		"sha256": "a1c6323eff4f660e16ae6f5832356444b3269c19a4f61146355a49e7c4be5ed1"
 	},
 	"libicu": {
-		"filename": "pool/main/libi/libicu/libicu_78.3_aarch64.deb",
-		"sha256": "f536403f65a08fe0df6e7304184e902d54def77d5c3bd5edfd9109d57601d276"
+		"filename": "pool/main/libi/libicu/libicu_79.1_aarch64.deb",
+		"sha256": "83c980a010e957738e3567127801d66a1b9bd7e404a4fda98788048ee57d606c"
 	},
 	"liblzma": {
 		"filename": "pool/main/libl/liblzma/liblzma_5.8.4_aarch64.deb",
@@ -164,15 +164,15 @@
 		"sha256": "f44bbfdc3d42ec0217bffa978309390e59cea5a48a9a83226d4a496c42ad0b99"
 	},
 	"nodejs": {
-		"filename": "pool/main/n/nodejs/nodejs_26.13.0_aarch64.deb",
-		"sha256": "1169a96a37be93d7aa7dcd773334ea4c9c0d0bea9fd100925d29ed7e7cc81320"
+		"filename": "pool/main/n/nodejs/nodejs_26.13.0-1_aarch64.deb",
+		"sha256": "c0b1869a63870d7abad22770f80b06bb57e89ae6d95bb8583c03f6e2962d0e46"
 	},
 	"nodejs-lts": {
-		"filename": "pool/main/n/nodejs-lts/nodejs-lts_24.22.2_aarch64.deb",
-		"sha256": "150d7dd382e92587808d96813b9538fe5c6c41fa33f1a1033daa4e30c6ff2695"
+		"filename": "pool/main/n/nodejs-lts/nodejs-lts_24.22.2-1_aarch64.deb",
+		"sha256": "837bbc7e422ef44583d590b7735c8736916183a185fc6f8c547c42b44cabfd01"
 	},
 	"npm": {
-		"filename": "pool/main/n/npm/npm_12.2.1_all.deb",
+		"filename": "pool/main/n/npm/npm_12.2.2_all.deb",
 		"sha256": "edb4a1dc3a6967f1e65872c7cb7588bd3672152beab6ae633ba848931371e9e1"
 	},
 	"openssl": {
@@ -240,7 +240,7 @@
 		"sha256": "c26e35d5393d4ad59d7bfbac93570d418996e69bc160458bee0e165844ae56e8"
 	},
 	"zlib": {
-		"filename": "pool/main/z/zlib/zlib_1.3.2_aarch64.deb",
-		"sha256": "75e7d0af17fcc3b40004309fdc00a1ddb9ae08346dce5e269902c34ac3966ac9"
+		"filename": "pool/main/z/zlib/zlib_1.4_aarch64.deb",
+		"sha256": "e3027565ae50bcd8ba5113c988b589754ae192c9cc3e6afbe3e4ed7c06b2598e"
 	}
 }

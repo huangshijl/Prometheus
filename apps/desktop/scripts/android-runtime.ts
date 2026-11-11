@@ -4,6 +4,7 @@
 // Android only lets an app execute files from its native-library directory, so Node ships as libnode.so and the
 // server as libserver_bundle.so (a tarball that the app unpacks on first launch, see src-tauri/src/android.rs).
 // Node comes from Termux: Google and nodejs.org publish no Android build, and Termux's is the maintained one.
+// Versions float with the Termux index by default (see `pinned` below); the resolved set is printed on every run.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, closeSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -32,10 +33,12 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const bundle = join(root, "dist/server-bundle-android");
 const androidApp = join(root, "apps/desktop/src-tauri/gen/android/app");
 const jniDir = join(androidApp, "src/main/jniLibs", ABI);
-// Pinned package versions: Termux keeps only the newest build of each package, so a floating build breaks without warning.
+// Package versions float by default: Termux keeps only the newest build of each package, so a pinned one goes 404 as
+// soon as upstream repackages. `--pinned` / TERMUX_PINNED=1 uses this lock file for a byte-for-byte repeatable build.
 const lockPath = join(dirname(fileURLToPath(import.meta.url)), "android-termux.lock.json");
 const updateLock = process.argv.includes("--update-lock");
-// Extra place to fetch pinned .deb files from once Termux has dropped them (a release asset mirror, optional).
+const pinned = process.argv.includes("--pinned") || /^(1|true)$/i.test(process.env.TERMUX_PINNED ?? "");
+// Extra place to fetch .deb files from once Termux has dropped a build (a release asset mirror, optional).
 const mirror = process.env.TERMUX_MIRROR?.replace(/\/$/, "");
 const debCache = process.env.TERMUX_CACHE;
 
@@ -54,6 +57,11 @@ interface Pkg {
 }
 
 type Lock = Record<string, { filename: string; sha256: string }>;
+
+/** Version out of a pool path: `pool/main/n/nodejs/nodejs_26.13.0_aarch64.deb` -> `26.13.0`. */
+function debVersion(pkg: Pkg): string {
+	return /_([^/]+?)_[a-z0-9]+\.deb$/.exec(pkg.filename)?.[1] ?? "?";
+}
 
 async function get(url: string): Promise<Buffer> {
 	const res = await fetch(url);
@@ -164,7 +172,9 @@ try {
 		console.log(`pinned ${Object.keys(next).length} packages -> ${lockPath}`);
 		process.exit(0);
 	}
-	// Use the pinned build of each package when there is one; new packages fall back to the current index (and are reported).
+	// Termux keeps only the newest build of each package, and repackages often, so versions float by default: each run
+	// takes whatever the index currently has. `--pinned` (or TERMUX_PINNED=1) pins them to android-termux.lock.json
+	// instead, for a repeatable build; the resolved versions are printed either way so a floating APK is still traceable.
 	const pin = (p: Pkg): Pkg => {
 		const l = lock[p.name];
 		if (!l) {
@@ -173,8 +183,8 @@ try {
 		}
 		return { ...p, filename: l.filename, sha256: l.sha256, current: p };
 	};
-	const packages = [...fresh.map(pin), pin(certPackage)];
-	console.log(`termux packages: ${packages.map((p) => p.name).join(", ")}`);
+	const packages = pinned ? [...fresh.map(pin), pin(certPackage)] : [...fresh, certPackage];
+	console.log(`termux packages: ${packages.map((p) => `${p.name} ${debVersion(p)}`).join(", ")}`);
 
 	const staged = join(work, "root");
 	mkdirSync(staged, { recursive: true });
