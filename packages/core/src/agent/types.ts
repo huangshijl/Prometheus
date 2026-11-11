@@ -165,6 +165,8 @@ export interface RuntimeSession {
 	setPermissionMode(mode: PermissionMode): Promise<void>;
 	setName(name: string): void;
 	setAutoCompaction?(enabled: boolean): void;
+	/** PI's own retry loop, read per attempt; runtimes without one ignore it. */
+	setRetryEnabled?(enabled: boolean): void;
 	/** Re-read tools and extensions after a plugin install or mode change. */
 	refreshTools(): Promise<void>;
 

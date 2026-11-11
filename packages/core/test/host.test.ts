@@ -296,6 +296,23 @@ describe("PrometheusHost RPC (characterization)", () => {
 		expect((await host.call("settings.set", { compactPercent: 95 })).compactPercent).toBe(95);
 	});
 
+	it("settings.set stores the two retry switches and the pacing, clamping what is out of range", async () => {
+		// PI's own retry loop is on by default and lives in PI's settings.json, like auto-compaction.
+		expect((await host.call("settings.get", {})).retryEnabled).toBe(true);
+		expect((await host.call("settings.set", { retryEnabled: false })).retryEnabled).toBe(false);
+		expect((await host.call("settings.get", {})).retryEnabled).toBe(false);
+		// The app's own retry extension is off until asked for, and lives in Prometheus' config.
+		expect((await host.call("settings.get", {})).retryExtension).toBe(false);
+		expect((await host.call("settings.set", { retryExtension: true })).retryExtension).toBe(true);
+		expect((await host.call("settings.get", {})).retryExtension).toBe(true);
+		// 500 ms is the floor and the jitter cannot exceed 100%.
+		expect((await host.call("settings.set", { retryIntervalMs: 120 })).retryIntervalMs).toBe(500);
+		expect((await host.call("settings.get", {})).retryIntervalMs).toBe(500);
+		expect((await host.call("settings.set", { retryJitterPercent: 250 })).retryJitterPercent).toBe(100);
+		expect((await host.call("settings.set", { retryIntervalMs: 1500, retryJitterPercent: 30 })).retryIntervalMs).toBe(1500);
+		expect((await host.call("settings.get", {})).retryJitterPercent).toBe(30);
+	});
+
 	it("session.delete removes a saved session and its file", async () => {
 		const seeded = seedSession("delete me");
 		await host.call("session.open", { sessionId: seeded.id });

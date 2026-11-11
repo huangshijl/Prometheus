@@ -17,6 +17,15 @@ export const MAX_COMPACT_PERCENT = 95;
 /** The threshold used when the user has not chosen one. */
 export const DEFAULT_COMPACT_PERCENT = 80;
 
+/** Retry pacing of the app's own retry loop: a base interval that never goes below half a second, and one-sided jitter. */
+export const MIN_RETRY_INTERVAL_MS = 500;
+export const MAX_RETRY_INTERVAL_MS = 60_000;
+export const DEFAULT_RETRY_INTERVAL_MS = 1000;
+/** Jitter only ever adds: 1000 ms with 20% waits 1000..1200 ms, never 800. */
+export const MIN_RETRY_JITTER_PERCENT = 0;
+export const MAX_RETRY_JITTER_PERCENT = 100;
+export const DEFAULT_RETRY_JITTER_PERCENT = 20;
+
 export const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 export type GatewayFormat = "openai-completions" | "openai-responses" | "anthropic-messages" | "google-generative-ai";
 export const GATEWAY_FORMATS: readonly GatewayFormat[] = [
@@ -439,6 +448,14 @@ export type PromptDisposition = "started" | "queued" | "handled";
 export interface HostSettings {
 	/** PI auto-compaction (shared with the TUI through PI's settings.json). */
 	autoCompaction: boolean;
+	/** PI's own retry loop for a failed model call (shared with the TUI through PI's settings.json). Older servers omit it. */
+	retryEnabled?: boolean;
+	/** Whether Prometheus resends a failed model call about once a second until it goes through. Off when unset. Older servers omit it. */
+	retryExtension?: boolean;
+	/** Base interval of the app's own retry loop, in ms. The default applies when unset. Older servers omit it. */
+	retryIntervalMs?: number;
+	/** Upper bound of the retry jitter, in percent; the delay only ever grows. Older servers omit it. */
+	retryJitterPercent?: number;
 	/** Where the folder picker starts and where new workspaces are created; empty means the server's home directory. */
 	workspaceRoot: string;
 	/** Agent id (a `RuntimeInfo.id`) new chats start with; "pi" when unset. Older servers omit it. */

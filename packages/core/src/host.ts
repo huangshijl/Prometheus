@@ -1039,7 +1039,22 @@ ${extras.map((p) => `- ${p}`).join("\n")}` }, guidelines: [] } };
 	}
 
 	private hostSettings(): HostSettings {
-		return { autoCompaction: this.pi?.autoCompaction() ?? true, workspaceRoot: this.workspaceRoot(), defaultAgent: this.defaultAgent(), defaultPermission: this.defaultPermission(), defaultThinking: this.defaultThinking(), goalTurns: this.runtime.config.get().goalTurns || GOAL_DEFAULT_TURNS, compactPercent: this.compactPercent(), worktreeMode: this.worktreeMode(), worktreeDefault: this.runtime.config.get().worktreeDefault, worktreeStrategy: this.worktreeStrategy() };
+		return {
+			autoCompaction: this.pi?.autoCompaction() ?? true,
+			retryEnabled: this.pi?.retryEnabled() ?? true,
+			retryExtension: this.pi?.retryExtension() ?? false,
+			retryIntervalMs: this.runtime.config.get().retryIntervalMs,
+			retryJitterPercent: this.runtime.config.get().retryJitterPercent,
+			workspaceRoot: this.workspaceRoot(),
+			defaultAgent: this.defaultAgent(),
+			defaultPermission: this.defaultPermission(),
+			defaultThinking: this.defaultThinking(),
+			goalTurns: this.runtime.config.get().goalTurns || GOAL_DEFAULT_TURNS,
+			compactPercent: this.compactPercent(),
+			worktreeMode: this.worktreeMode(),
+			worktreeDefault: this.runtime.config.get().worktreeDefault,
+			worktreeStrategy: this.worktreeStrategy(),
+		};
 	}
 
 	/** The permission mode new chats start in; unknown values (a hand-edited config) fall back to asking first. */
@@ -1309,12 +1324,21 @@ ${extras.map((p) => `- ${p}`).join("\n")}` }, guidelines: [] } };
 		"fs.mkdir": ({ parent, name }) => this.createDir(parent, name),
 
 		"settings.get": () => this.hostSettings(),
-		"settings.set": async ({ autoCompaction, workspaceRoot, defaultAgent, defaultPermission, defaultThinking, goalTurns, compactPercent, worktreeMode, worktreeDefault, worktreeStrategy }) => {
+		"settings.set": async ({ autoCompaction, retryEnabled, retryExtension, retryIntervalMs, retryJitterPercent, workspaceRoot, defaultAgent, defaultPermission, defaultThinking, goalTurns, compactPercent, worktreeMode, worktreeDefault, worktreeStrategy }) => {
 			if (typeof autoCompaction === "boolean") {
 				await this.pi?.setAutoCompaction(autoCompaction);
 				// Live sessions cache their own SettingsManager.
 				for (const { session } of this.live.values()) session.setAutoCompaction?.(autoCompaction);
 			}
+			if (typeof retryEnabled === "boolean") {
+				await this.pi?.setRetryEnabled(retryEnabled);
+				for (const { session } of this.live.values()) session.setRetryEnabled?.(retryEnabled);
+			}
+			// The retry extension reads this setting on every event, so running sessions pick the change up as well.
+			if (typeof retryExtension === "boolean") await this.pi?.setRetryExtension(retryExtension);
+			// Pacing is read per attempt too; a value out of range is clamped rather than rejected.
+			if (typeof retryIntervalMs === "number") await this.runtime.config.setRetryIntervalMs(retryIntervalMs);
+			if (typeof retryJitterPercent === "number") await this.runtime.config.setRetryJitterPercent(retryJitterPercent);
 			if (typeof workspaceRoot === "string") {
 				const next = workspaceRoot.trim();
 				if (next && (!existsSync(next) || !statSync(next).isDirectory())) throw new AppError("dirNotFound", { dir: next });
