@@ -2,6 +2,7 @@ import clsx from "clsx";
 import { Code, ExternalLink, FolderOpen, FolderTree, Globe, Minus, PanelLeft, PanelRight, PanelRightClose, PanelRightOpen, Square, SquareTerminal, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { isDesktopShell, isLoopbackHost } from "../lib/backend.ts";
+import { BACK_LAYER, useBackLayer } from "../lib/back.ts";
 import { localizeError } from "../lib/errors.ts";
 import { defineMessages, useT } from "../lib/i18n.ts";
 import { call, NO_SUBAGENTS, pluginActive, toggleSubagentPanel, toggleWorkbenchKind, toggleWorkbenchPanel, useStore } from "../lib/store.ts";
@@ -63,6 +64,9 @@ const M = defineMessages({
 export function usePopover() {
 	const [open, setOpen] = useState(false);
 	const ref = useRef<HTMLDivElement>(null);
+	// The back gesture closes the menu rather than the app, and it outranks the sheet the menu was opened from. Every
+	// dropdown in the app goes through here, so this is the one place that has to know about it.
+	useBackLayer(BACK_LAYER.menu, open, () => setOpen(false));
 	useEffect(() => {
 		if (!open) return;
 		const close = (e: MouseEvent) => {

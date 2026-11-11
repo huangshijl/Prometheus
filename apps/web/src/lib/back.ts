@@ -9,8 +9,8 @@ import { useEffect, useRef } from "react";
  * when none wants it, the shell sends the app to the background instead of finishing it.
  */
 
-/** Close order for the gesture. A layer drawn higher up must win. */
-export const BACK_LAYER = { sheet: 40, view: 30, drawer: 20 } as const;
+/** Close order for the gesture. A layer drawn higher up must win: an open menu sits above the sheet it came from. */
+export const BACK_LAYER = { menu: 50, sheet: 40, view: 30, drawer: 20 } as const;
 
 type Layer = { priority: number; close: () => void };
 
