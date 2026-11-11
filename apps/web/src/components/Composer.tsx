@@ -16,6 +16,7 @@ import { BACK_LAYER, useBackLayer } from "../lib/back.ts";
 import { useVisualViewport } from "../lib/viewport.ts";
 import { ComposerSheet, isSheetSendChord } from "./ComposerSheet.tsx";
 import { ContextMeter } from "./ContextMeter.tsx";
+import { FloatingMenu } from "./FloatingMenu.tsx";
 import { ModePicker } from "./ModePicker.tsx";
 import { RuntimeMenu } from "./RuntimeMenu.tsx";
 import { GoalBar } from "./GoalBar.tsx";
@@ -234,7 +235,7 @@ function ModelPicker() {
 	const channel = current ? groupName(current.provider) : "";
 
 	return (
-		<div ref={ref} className="min-w-0 max-w-full md:relative md:max-w-80">
+		<div ref={ref} className="relative min-w-0 max-w-full md:max-w-80">
 			<button
 				type="button"
 				onClick={() => setOpen(!open)}
@@ -252,7 +253,7 @@ ${current.provider}/${current.id}` : undefined}
 				<ChevronDown className="size-3 shrink-0 opacity-60" />
 			</button>
 			{open && (
-				<div className="absolute bottom-full left-3 right-3 z-40 mb-2 md:left-0 md:right-auto md:w-[26rem] animate-rise overflow-hidden rounded-xl border border-ink-700 bg-ink-900/97 shadow-2xl shadow-black/40 backdrop-blur">
+				<FloatingMenu anchor={ref} width={416} onClose={() => setOpen(false)} className="rounded-xl border-ink-700">
 					<div className="flex items-center gap-2 border-b border-ink-800 px-3">
 						<Search className="size-3.5 text-ink-500" />
 						<input autoFocus={!isTouchPrimary()} value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("searchModel")} className="w-full bg-transparent py-2.5 text-sm focus:outline-none" />
@@ -350,7 +351,7 @@ ${m.provider}/${m.id}`}
 							</div>
 						))}
 					</div>
-				</div>
+				</FloatingMenu>
 			)}
 		</div>
 	);
@@ -366,7 +367,7 @@ function SendModePicker() {
 		{ value: "steer", icon: CornerDownRight },
 	];
 	return (
-		<div ref={ref} className="md:relative">
+		<div ref={ref} className="relative">
 			<button
 				type="button"
 				onClick={() => setOpen(!open)}
@@ -378,7 +379,7 @@ function SendModePicker() {
 				<ChevronDown className="size-3" />
 			</button>
 			{open && (
-				<div className="absolute right-3 bottom-full left-3 z-40 mb-2 animate-rise overflow-hidden rounded-xl border border-ink-700 bg-ink-900/97 shadow-2xl shadow-black/40 backdrop-blur md:right-0 md:left-auto md:w-72">
+				<FloatingMenu anchor={ref} width={288} align="end" onClose={() => setOpen(false)} className="rounded-xl border-ink-700">
 					<div className="px-3.5 pt-3 pb-1.5 text-sm font-medium text-ink-100">{t("sendMode")}</div>
 					<div className="pb-1.5">
 						{options.map(({ value, icon: Icon }) => (
@@ -400,7 +401,7 @@ function SendModePicker() {
 							</button>
 						))}
 					</div>
-				</div>
+				</FloatingMenu>
 			)}
 		</div>
 	);
@@ -434,7 +435,7 @@ function EffortPicker() {
 	const pos = (i: number) => (levels.length > 1 ? (i / (levels.length - 1)) * 100 : 0);
 
 	return (
-		<div ref={ref} className="shrink-0 md:relative">
+		<div ref={ref} className="relative shrink-0">
 			<button
 				type="button"
 				onClick={() => setOpen(!open)}
@@ -446,7 +447,7 @@ function EffortPicker() {
 				<span className="@max-[28rem]:hidden">{t(level)}</span>
 			</button>
 			{open && (
-				<div className="absolute bottom-full left-3 right-3 z-40 mb-2 md:left-0 md:right-auto md:w-80 animate-rise rounded-xl border border-ink-700 bg-ink-900/97 px-4 pt-3.5 pb-3 shadow-2xl shadow-black/40 backdrop-blur">
+				<FloatingMenu anchor={ref} width={320} onClose={() => setOpen(false)} className="rounded-xl border-ink-700 px-4 pt-3.5 pb-3">
 					<div className="flex items-baseline justify-between">
 						<span className="text-sm font-medium text-ink-100">{t("effort")}</span>
 						<span className="font-mono text-xs text-ember-300">{t(level)}</span>
@@ -483,7 +484,7 @@ function EffortPicker() {
 							))}
 						</div>
 					</div>
-				</div>
+				</FloatingMenu>
 			)}
 		</div>
 	);
