@@ -27,8 +27,7 @@ import {
 	Trash2,
 	X,
 } from "lucide-react";
-import { type ReactNode, type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { type ReactNode, type RefObject, useEffect, useMemo, useState } from "react";
 import type { PanelInfo, SessionSummary, WorkspaceInfo } from "@prometheus/protocol";
 import { clearSession, saveMode, saveRemote } from "../lib/backend.ts";
 import type { BackendTarget } from "../lib/client.ts";
@@ -55,6 +54,7 @@ import {
 	useStore,
 } from "../lib/store.ts";
 import { WorkspaceFolders } from "./WorkspaceFolders.tsx";
+import { FloatingMenu as SharedFloatingMenu } from "./FloatingMenu.tsx";
 import { usePopover } from "./TitleBar.tsx";
 
 const M = defineMessages({
@@ -151,43 +151,14 @@ const M = defineMessages({
 const menuItem = "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] max-md:py-2.5";
 
 /**
- * Dropdown rendered in a portal with fixed coordinates: the sidebar list scrolls and clips (overflow, Collapse, the mobile drawer's
- * transform), which cut an absolutely positioned menu off. It flips above the button near the bottom edge and stays inside the screen.
+ * Dropdown for the sidebar rows: the shared portal menu, dressed as a compact list because the sidebar scrolls and
+ * clips and the drawer translates, which used to cut an absolutely positioned menu off.
  */
 function FloatingMenu({ anchor, width, onClose, children }: { anchor: RefObject<HTMLElement | null>; width: number; onClose: () => void; children: ReactNode }) {
-	const box = useRef<HTMLDivElement>(null);
-	const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
-	useLayoutEffect(() => {
-		const a = anchor.current?.getBoundingClientRect();
-		const h = box.current?.offsetHeight ?? 0;
-		if (!a) return;
-		const margin = 8;
-		const w = Math.min(width, window.innerWidth - margin * 2);
-		const left = Math.max(margin, Math.min(a.right - w, window.innerWidth - w - margin));
-		const below = a.bottom + 4;
-		const top = below + h > window.innerHeight - margin ? Math.max(margin, a.top - 4 - h) : below;
-		setPos({ left, top });
-	}, [anchor, width]);
-	useEffect(() => {
-		const close = () => onClose();
-		window.addEventListener("resize", close);
-		window.addEventListener("scroll", close, true);
-		return () => {
-			window.removeEventListener("resize", close);
-			window.removeEventListener("scroll", close, true);
-		};
-	}, [onClose]);
-	return createPortal(
-		<div
-			ref={box}
-			data-floating-menu
-			style={{ position: "fixed", left: pos?.left ?? 0, top: pos?.top ?? 0, width: Math.min(width, window.innerWidth - 16), visibility: pos ? "visible" : "hidden" }}
-			className="z-[200] animate-rise rounded-lg border border-ink-700 bg-ink-900 p-1 shadow-xl shadow-black/40"
-			onClick={(e) => e.stopPropagation()}
-		>
+	return (
+		<SharedFloatingMenu anchor={anchor} width={width} align="end" onClose={onClose} className="rounded-lg border-ink-700 p-1">
 			{children}
-		</div>,
-		document.body,
+		</SharedFloatingMenu>
 	);
 }
 

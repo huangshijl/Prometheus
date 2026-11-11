@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { ModeInEffect, ModeSummary } from "@prometheus/protocol";
 import { defineMessages, useT } from "../lib/i18n.ts";
 import { pluginActive, pluginCall, toast, useStore } from "../lib/store.ts";
+import { FloatingMenu } from "./FloatingMenu.tsx";
 import { usePopover } from "./TitleBar.tsx";
 
 const M = defineMessages({
@@ -103,7 +104,7 @@ export function ModePicker() {
 	const own = effect?.source === "session";
 
 	return (
-		<div ref={ref} className="shrink-0 md:relative">
+		<div ref={ref} className="relative shrink-0">
 			<button
 				type="button"
 				onClick={() => setOpen(!open)}
@@ -118,7 +119,7 @@ export function ModePicker() {
 				<ChevronDown className="size-3 shrink-0 opacity-60" />
 			</button>
 			{open && (
-				<div className="absolute bottom-full left-3 right-3 z-40 mb-2 max-h-[70vh] overflow-y-auto md:left-0 md:right-auto md:w-96 animate-rise rounded-xl border border-ink-700 bg-ink-900/97 shadow-2xl shadow-black/40 backdrop-blur">
+				<FloatingMenu anchor={ref} width={384} onClose={() => setOpen(false)} className="rounded-xl border-ink-700">
 					<div className="flex items-baseline justify-between px-3.5 pt-3 pb-1">
 						<span className="text-sm font-medium text-ink-100">{t("title")}</span>
 						<span className="font-mono text-[10.5px] text-ink-500">{t("hint")}</span>
@@ -173,7 +174,7 @@ export function ModePicker() {
 							? `${t("applied")}: ${[effect.applied.identity ? "identity" : "", effect.applied.docs ? "docs" : ""].filter(Boolean).join(" + ") || "—"}`
 							: t("notYet")}
 					</div>
-				</div>
+				</FloatingMenu>
 			)}
 		</div>
 	);

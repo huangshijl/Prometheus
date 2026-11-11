@@ -4,6 +4,7 @@ import type { RuntimeInfo, RuntimeKind } from "@prometheus/protocol";
 import { isAndroid } from "../lib/backend.ts";
 import { defineMessages, useT } from "../lib/i18n.ts";
 import { openSettings, setDraftAgent, switchRuntime, useStore } from "../lib/store.ts";
+import { FloatingMenu } from "./FloatingMenu.tsx";
 import { usePopover } from "./TitleBar.tsx";
 
 const M = defineMessages({
@@ -82,7 +83,7 @@ export function RuntimeMenu({ mode }: { mode: "draft" | "session" }) {
 	};
 
 	return (
-		<div ref={ref} className="md:relative">
+		<div ref={ref} className="relative">
 			<button
 				type="button"
 				onClick={() => setOpen(!open)}
@@ -94,7 +95,7 @@ export function RuntimeMenu({ mode }: { mode: "draft" | "session" }) {
 				<ChevronDown className="size-3 shrink-0 opacity-60" />
 			</button>
 			{open && (
-				<div className="absolute bottom-full left-3 right-3 z-40 mb-2 max-h-[70vh] overflow-y-auto md:left-0 md:right-auto md:w-80 animate-rise rounded-xl border border-ink-700 bg-ink-900/97 shadow-2xl shadow-black/40 backdrop-blur">
+				<FloatingMenu anchor={ref} width={320} onClose={() => setOpen(false)} className="rounded-xl border-ink-700">
 					<div className="px-3.5 pt-3 pb-2">
 						<div className="text-sm font-medium text-ink-100">{t("title")}</div>
 						<div className="mt-0.5 text-xs text-ink-500">{busy ? t("busy") : mode === "draft" ? t("hintDraft") : t("hintSession")}</div>
@@ -145,7 +146,7 @@ export function RuntimeMenu({ mode }: { mode: "draft" | "session" }) {
 					>
 						{t("manage")}
 					</button>
-				</div>
+				</FloatingMenu>
 			)}
 		</div>
 	);
