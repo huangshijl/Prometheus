@@ -3,6 +3,7 @@ import { Bot, Check, ChevronDown, ClipboardList, FilePen, Hand, ShieldAlert } fr
 import { PERMISSION_MODES, type PermissionMode } from "@prometheus/protocol";
 import { defineMessages, useT } from "../lib/i18n.ts";
 import { setPermissionMode, useStore } from "../lib/store.ts";
+import { FloatingMenu } from "./FloatingMenu.tsx";
 import { usePopover } from "./TitleBar.tsx";
 
 const M = defineMessages({
@@ -61,7 +62,7 @@ export function PermissionPicker() {
 	const Icon = ICONS[mode];
 
 	return (
-		<div ref={ref} className="shrink-0 md:relative">
+		<div ref={ref} className="relative shrink-0">
 			<button
 				type="button"
 				onClick={() => setOpen(!open)}
@@ -73,7 +74,7 @@ export function PermissionPicker() {
 				<ChevronDown className="size-3 shrink-0 opacity-60" />
 			</button>
 			{open && (
-				<div className="absolute bottom-full left-3 right-3 z-40 mb-2 md:left-0 md:right-auto md:w-80 animate-rise overflow-hidden rounded-xl border border-ink-700 bg-ink-900/97 shadow-2xl shadow-black/40 backdrop-blur">
+				<FloatingMenu anchor={ref} width={320} onClose={() => setOpen(false)} className="rounded-xl border-ink-700">
 					<div className="flex items-baseline justify-between px-3.5 pt-3 pb-1.5">
 						<span className="text-sm font-medium text-ink-100">{t("title")}</span>
 						<span className="font-mono text-[10.5px] text-ink-500">{t("hint")}</span>
@@ -101,7 +102,7 @@ export function PermissionPicker() {
 							);
 						})}
 					</div>
-				</div>
+				</FloatingMenu>
 			)}
 		</div>
 	);
