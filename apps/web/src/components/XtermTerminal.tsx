@@ -2,33 +2,40 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import clsx from "clsx";
-import { Brush, Keyboard, Square } from "lucide-react";
+import { Brush, Keyboard, Plus, Square, X } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { isTouchPrimary } from "../lib/backend.ts";
 import { defineMessages, useT } from "../lib/i18n.ts";
 import { usePrefs } from "../lib/prefs.ts";
+import { anyMod, DOUBLE_TAP_MS, encodeChar, encodeKey, FIXED, type Held, MODIFIERS, modsOf, parseKeys } from "../lib/terminalKeys.ts";
 import { terminalIds, useStore, type WorkbenchTab } from "../lib/store.ts";
 
 const M = defineMessages({
 	zh: {
-		opening: "正在打开终端…",
 		interrupt: "中断（Ctrl+C）",
 		clear: "清屏（Ctrl+L）",
 		keys: "快捷键栏",
-		ctrl: "Ctrl",
-		ctrlHint: "按住 Ctrl：下一次按键会变成组合键",
 		ended: "终端已关闭或服务已重启。",
 		restart: "重新打开终端",
+		holdHint: "双击 Ctrl/Alt/Shift 可以按住不放，再点别的键组成组合",
+		add: "自定义按键",
+		keyLabel: "显示名",
+		keySpec: "按键（如 ^C、\\t、ls）",
+		save: "添加",
+		cancel: "取消",
 	},
 	en: {
-		opening: "Opening the terminal…",
 		interrupt: "Interrupt (Ctrl+C)",
 		clear: "Clear (Ctrl+L)",
 		keys: "Key bar",
-		ctrl: "Ctrl",
-		ctrlHint: "Ctrl is held for the next key",
 		ended: "The terminal was closed or the service restarted.",
 		restart: "Reopen terminal",
+		holdHint: "Double-tap Ctrl/Alt/Shift to hold it, then tap another key to combine",
+		add: "Custom key",
+		keyLabel: "Label",
+		keySpec: "Keys (^C, \\t, ls …)",
+		save: "Add",
+		cancel: "Cancel",
 	},
 });
 
@@ -70,20 +77,34 @@ function readTheme(): ITheme {
 	};
 }
 
-/** What a key bar sends: the same bytes a keyboard would, which the terminal hands to the shell as-is. */
-const KEY = {
-	escape: "\x1b",
-	tab: "\t",
-	ctrlC: "\x03",
-	ctrlD: "\x04",
-	ctrlL: "\x0c",
-	up: "\x1b[A",
-	down: "\x1b[B",
-	left: "\x1b[D",
-	right: "\x1b[C",
-	home: "\x1b[H",
-	end: "\x1b[F",
-} as const;
+interface CustomKey {
+	id: string;
+	label: string;
+	spec: string;
+}
+
+const KEY_STORE = "prometheus.terminal.customKeys";
+
+function loadCustomKeys(): CustomKey[] {
+	try {
+		const raw = JSON.parse(localStorage.getItem(KEY_STORE) ?? "[]") as unknown;
+		if (!Array.isArray(raw)) return [];
+		return raw.filter((k): k is CustomKey => !!k && typeof (k as CustomKey).id === "string" && typeof (k as CustomKey).spec === "string");
+	} catch {
+		return [];
+	}
+}
+
+const saveCustomKeys = (keys: CustomKey[]) => {
+	try {
+		localStorage.setItem(KEY_STORE, JSON.stringify(keys));
+	} catch {
+		/* storage full or blocked; the bar still works for this session */
+	}
+};
+
+/** How long two taps on the same key still count as a double tap. */
+// ---------- Component ----------
 
 /**
  * The terminal proper: a real pseudo-terminal on the server (see `ptySpec`) drawn by xterm.js, so ^C is a signal, Tab
@@ -107,12 +128,10 @@ export function XtermTerminal({ tab }: { tab: Extract<WorkbenchTab, { kind: "ter
 	const [epoch, setEpoch] = useState(0);
 	// A phone has no Esc, no Tab, no Ctrl and no arrows: they live on screen, and here they actually reach the shell.
 	const [pad, setPad] = useState(() => isTouchPrimary());
-	const [ctrl, setCtrlState] = useState(false);
-	const ctrlHeld = useRef(false);
-	const setCtrl = (held: boolean) => {
-		ctrlHeld.current = held;
-		setCtrlState(held);
-	};
+	const [held, setHeld] = useState<Held[]>([]);
+	const heldRef = useRef<Held[]>([]);
+	heldRef.current = held;
+	const [custom, setCustom] = useState<CustomKey[]>(loadCustomKeys);
 
 	const send = useCallback((data: string) => {
 		const id = session.current.id;
@@ -181,18 +200,11 @@ export function XtermTerminal({ tab }: { tab: Extract<WorkbenchTab, { kind: "ter
 		fitAddon.current = fit;
 
 		const data = xterm.onData((input) => {
-			if (ctrlHeld.current) {
-				setCtrl(false);
-				// Ctrl only transforms a single character; anything longer (a paste) goes through untouched.
-				if (input.length === 1) {
-					const code = input.toLowerCase().charCodeAt(0);
-					// a-z map to 1-26, and the bracket family to 27-31, exactly as a terminal would send them.
-					if (code >= 97 && code <= 122) return send(String.fromCharCode(code - 96));
-					if (input === " ") return send("\x00");
-					if (input === "[") return send("\x1b");
-					if (input === "\\") return send("\x1c");
-					if (input === "]") return send("\x1d");
-				}
+			const mods = modsOf(heldRef.current);
+			// A held modifier applies to what the keyboard types next, then releases: Ctrl + c from the soft keyboard.
+			if (anyMod(mods) && input.length === 1) {
+				setHeld([]);
+				return send(encodeChar(input, mods));
 			}
 			send(input);
 		});
@@ -286,6 +298,31 @@ export function XtermTerminal({ tab }: { tab: Extract<WorkbenchTab, { kind: "ter
 		setEpoch((n) => n + 1);
 	};
 
+	/**
+	 * One tap on a modifier picks it up until the next key; a second tap within the double-tap window locks it down,
+	 * and locks can stack (Ctrl then Alt), until a normal key is tapped and the combination goes out.
+	 */
+	const lastTap = useRef({ id: "", at: 0 });
+	const press = (id: string, customSpec?: string) => {
+		const mod = MODIFIERS.some((m) => m.id === id);
+		const now = Date.now();
+		const doubled = lastTap.current.id === id && now - lastTap.current.at < DOUBLE_TAP_MS;
+		lastTap.current = { id, at: now };
+
+		if (mod) {
+			if (doubled) {
+				setHeld((cur) => (cur.some((h) => h.id === id) ? cur.map((h) => (h.id === id ? { ...h, lock: true } : h)) : [...cur, { id, lock: true }]));
+				return;
+			}
+			setHeld((cur) => (cur.some((h) => h.id === id) ? cur.filter((h) => h.id !== id) : [...cur, { id, lock: false }]));
+			return;
+		}
+		send(encodeKey(id, modsOf(heldRef.current), customSpec));
+		setHeld([]);
+	};
+
+	const lockCount = held.filter((h) => h.lock).length;
+
 	return (
 		<div className="flex h-full min-h-0 flex-col bg-ink-950">
 			<div className="flex shrink-0 items-center gap-2 border-b hairline px-3 py-1.5 text-xs">
@@ -301,10 +338,19 @@ export function XtermTerminal({ tab }: { tab: Extract<WorkbenchTab, { kind: "ter
 				>
 					<Keyboard className="size-3.5" />
 				</button>
-				<button type="button" onClick={() => send(KEY.ctrlC)} disabled={status !== "ready"} className="grid size-6 place-items-center rounded text-ink-400 hover:bg-ink-800 hover:text-rose-400 disabled:opacity-40" title={t("interrupt")}>
+				<button type="button" onClick={() => send("\x03")} disabled={status !== "ready"} className="grid size-6 place-items-center rounded text-ink-400 hover:bg-ink-800 hover:text-rose-400 disabled:opacity-40" title={t("interrupt")}>
 					<Square className="size-3.5" />
 				</button>
-				<button type="button" onClick={() => send(KEY.ctrlL)} disabled={status !== "ready"} className="grid size-6 place-items-center rounded text-ink-400 hover:bg-ink-800 hover:text-ink-100 disabled:opacity-40" title={t("clear")}>
+				<button
+					type="button"
+					onClick={() => {
+						setHeld([]);
+						send("\x0c");
+					}}
+					disabled={status !== "ready"}
+					className="grid size-6 place-items-center rounded text-ink-400 hover:bg-ink-800 hover:text-ink-100 disabled:opacity-40"
+					title={t("clear")}
+				>
 					<Brush className="size-3.5" />
 				</button>
 			</div>
@@ -324,59 +370,138 @@ export function XtermTerminal({ tab }: { tab: Extract<WorkbenchTab, { kind: "ter
 			)}
 
 			{pad && status === "ready" && (
-				<div className="flex shrink-0 items-center gap-1 overflow-x-auto border-t hairline px-2 py-1.5">
-					<Key
-						title={t("ctrlHint")}
-						onPress={() => setCtrl(!ctrl)}
-						className={ctrl ? "bg-ember-500/20 text-ember-200" : undefined}
-					>
-						{t("ctrl")}
-					</Key>
-					<Key title="Esc" onPress={() => send(KEY.escape)}>
-						Esc
-					</Key>
-					<Key title="Tab" onPress={() => send(KEY.tab)}>
-						Tab
-					</Key>
-					<Key title="Ctrl+C" onPress={() => send(KEY.ctrlC)}>
-						^C
-					</Key>
-					<Key title="Ctrl+D" onPress={() => send(KEY.ctrlD)}>
-						^D
-					</Key>
-					<Key title="↑" onPress={() => send(KEY.up)}>
-						↑
-					</Key>
-					<Key title="↓" onPress={() => send(KEY.down)}>
-						↓
-					</Key>
-					<Key title="←" onPress={() => send(KEY.left)}>
-						←
-					</Key>
-					<Key title="→" onPress={() => send(KEY.right)}>
-						→
-					</Key>
-					<Key title="Home" onPress={() => send(KEY.home)}>
-						Home
-					</Key>
-					<Key title="End" onPress={() => send(KEY.end)}>
-						End
-					</Key>
-				</div>
+				<KeyBar
+					held={held}
+					locked={lockCount > 0}
+					custom={custom}
+					onPress={press}
+					onCustomChange={(keys) => {
+						setCustom(keys);
+						saveCustomKeys(keys);
+					}}
+				/>
 			)}
 		</div>
 	);
 }
 
-/** One key of the on-screen bar: a thumb wide, a terminal apart from the next. */
-function Key({ title, onPress, className, children }: { title: string; onPress: () => void; className?: string; children: ReactNode }) {
+/**
+ * The on-screen keys: Ctrl/Alt/Shift/Tab on the first row, the arrows and Home/End on the second, then whatever the user
+ * added and a `+` to add more. Nothing here is a fixed shortcut — a ^C is just a custom key that sends `^C`.
+ */
+function KeyBar({ held, locked, custom, onPress, onCustomChange }: { held: Held[]; locked: boolean; custom: CustomKey[]; onPress: (id: string, spec?: string) => void; onCustomChange: (keys: CustomKey[]) => void }) {
+	const t = useT(M);
+	const [editing, setEditing] = useState(false);
+	const [label, setLabel] = useState("");
+	const [spec, setSpec] = useState("");
+	const isHeld = (id: string) => held.some((h) => h.id === id);
+	const isLocked = (id: string) => held.some((h) => h.id === id && h.lock);
+
+	const add = () => {
+		const keys = spec.trim();
+		if (!keys) return;
+		onCustomChange([...custom, { id: `k${Date.now().toString(36)}`, label: label.trim() || keys, spec: keys }]);
+		setLabel("");
+		setSpec("");
+	};
+
+	return (
+		<div className="shrink-0 border-t hairline bg-ink-950/60">
+			{editing && (
+				<div className="border-b hairline px-2 py-2">
+					<div className="flex items-center gap-1">
+						<input
+							value={label}
+							onChange={(e) => setLabel(e.target.value)}
+							placeholder={t("keyLabel")}
+							className="min-w-0 flex-1 rounded-md border border-ink-700 bg-ink-900 px-2 py-1 text-xs text-ink-100 outline-none placeholder:text-ink-600 focus:border-ember-500"
+						/>
+						<input
+							value={spec}
+							onChange={(e) => setSpec(e.target.value)}
+							onKeyDown={(e) => e.key === "Enter" && add()}
+							placeholder={t("keySpec")}
+							autoFocus
+							className="min-w-0 flex-1 rounded-md border border-ink-700 bg-ink-900 px-2 py-1 font-mono text-xs text-ink-100 outline-none placeholder:text-ink-600 focus:border-ember-500"
+						/>
+						<button type="button" onClick={add} disabled={!spec.trim()} className="rounded-md bg-ember-500 px-2 py-1 text-xs font-medium text-white disabled:bg-ink-800 disabled:text-ink-500">
+							{t("save")}
+						</button>
+						<button type="button" onClick={() => setEditing(false)} className="rounded-md px-2 py-1 text-xs text-ink-400 hover:text-ink-100">
+							{t("cancel")}
+						</button>
+					</div>
+					{custom.length > 0 && (
+						<div className="mt-1.5 flex flex-wrap gap-1">
+							{custom.map((k) => (
+								<span key={k.id} className="inline-flex items-center gap-1 rounded-md bg-ink-800 px-1.5 py-0.5 text-[11px] text-ink-300">
+									<span className="font-mono">{k.label}</span>
+									<button type="button" onClick={() => onCustomChange(custom.filter((c) => c.id !== k.id))} className="text-ink-500 hover:text-rose-400" aria-label={`remove ${k.label}`}>
+										<X className="size-3" />
+									</button>
+								</span>
+							))}
+						</div>
+					)}
+				</div>
+			)}
+
+			<div className="flex items-center gap-1 overflow-x-auto px-2 pt-1.5">
+				{MODIFIERS.map((m) => (
+					<PadKey key={m.id} onPress={() => onPress(m.id)} active={isHeld(m.id)} locked={isLocked(m.id)} title={t("holdHint")}>
+						{m.label}
+					</PadKey>
+				))}
+				<PadKey onPress={() => onPress("tab")} active={isHeld("tab")}>
+					Tab
+				</PadKey>
+			</div>
+
+			<div className="flex items-center gap-1 overflow-x-auto px-2 py-1.5">
+				{FIXED.filter((k) => k.id !== "tab").map((k) => (
+					<PadKey key={k.id} onPress={() => onPress(k.id)} active={isHeld(k.id)}>
+						{k.label}
+					</PadKey>
+				))}
+				{custom.map((k) => (
+					<PadKey key={k.id} onPress={() => onPress(k.id, parseKeys(k.spec))} active={isHeld(k.id)} mono>
+						{k.label}
+					</PadKey>
+				))}
+				<button
+					type="button"
+					onClick={() => setEditing((v) => !v)}
+					aria-pressed={editing}
+					title={t("add")}
+					aria-label={t("add")}
+					className={clsx("grid size-9 shrink-0 place-items-center rounded-lg border border-dashed transition-colors", editing ? "border-ember-500 text-ember-300" : "border-ink-700 text-ink-400 hover:border-ink-600 hover:text-ink-200")}
+				>
+					<Plus className="size-4" />
+				</button>
+			</div>
+
+			{locked && <div className="px-2 pb-1 text-[10.5px] text-ember-300/80">{t("holdHint")}</div>}
+		</div>
+	);
+}
+
+/** One key: a thumb wide, and visibly held when a modifier is waiting for the rest of its combination. */
+function PadKey({ onPress, active, locked, mono, title, children }: { onPress: () => void; active?: boolean; locked?: boolean; mono?: boolean; title?: string; children: ReactNode }) {
 	return (
 		<button
 			type="button"
-			title={title}
-			aria-label={title}
 			onClick={onPress}
-			className={clsx("shrink-0 rounded-md bg-ink-800 px-3 py-1 font-mono text-[11px] text-ink-200 transition-colors hover:bg-ink-700 active:bg-ink-600", className)}
+			title={title}
+			aria-pressed={active}
+			className={clsx(
+				"h-9 shrink-0 rounded-lg px-3 text-[12px] transition-colors",
+				mono && "font-mono",
+				active
+					? locked
+						? "bg-ember-500/25 text-ember-100 ring-1 ring-ember-400/60"
+						: "bg-ember-500/15 text-ember-200 ring-1 ring-ember-400/35"
+					: "bg-ink-800 text-ink-200 hover:bg-ink-700 active:bg-ink-600",
+			)}
 		>
 			{children}
 		</button>
