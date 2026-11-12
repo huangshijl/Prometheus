@@ -121,6 +121,11 @@ export function XtermTerminal({ tab }: { tab: Extract<WorkbenchTab, { kind: "ter
 	const host = useRef<HTMLDivElement>(null);
 	const term = useRef<Terminal | null>(null);
 	const fitAddon = useRef<FitAddon | null>(null);
+	const cursorBox = useRef<HTMLDivElement>(null);
+	/** Placed by the render effect; writing to the screen also calls it, so the box follows output, not just events. */
+	const syncCursorRef = useRef<() => void>(() => undefined);
+	/** The column count the pseudo-terminal was started with; xterm is held at exactly that. */
+	const lockedCols = useRef(0);
 	const session = useRef({ id: "", topic: "", offset: 0, primed: false });
 	const [status, setStatus] = useState<"opening" | "ready" | "lost">("opening");
 	const [error, setError] = useState("");
@@ -139,6 +144,16 @@ export function XtermTerminal({ tab }: { tab: Extract<WorkbenchTab, { kind: "ter
 		void quiet("write", { id, data }).catch(() => undefined);
 	}, []);
 
+	/**
+	 * Everything the shell prints goes to the screen through here. DEC cursor-hide is sticky: a program that sends
+	 * `\x1b[?25l` and dies without sending `\x1b[?25h` leaves the terminal without a cursor for the rest of the
+	 * session, which is exactly what a phone shows as "the cursor is gone". Filter the hide and keep the rest.
+	 */
+	const paint = useCallback((text: string) => {
+		// The callback runs once the text has been parsed and laid out, which is the moment the cursor has moved.
+		term.current?.write(text.replace(/\x1b\[\?25l/g, ""), () => syncCursorRef.current());
+	}, []);
+
 	/** Fill a gap the stream left: the buffer on the server still has it. */
 	const pull = useCallback(async () => {
 		const s = session.current;
@@ -146,8 +161,8 @@ export function XtermTerminal({ tab }: { tab: Extract<WorkbenchTab, { kind: "ter
 		const r = await quiet<{ data: string; next: number }>("read", { id: s.id, since: s.offset }).catch(() => undefined);
 		if (!r || session.current.id !== s.id) return;
 		s.offset = r.next;
-		if (r.data) term.current?.write(r.data);
-	}, []);
+		if (r.data) paint(r.data);
+	}, [paint]);
 
 	const feed = useCallback(
 		(from: number, text: string) => {
@@ -168,9 +183,9 @@ export function XtermTerminal({ tab }: { tab: Extract<WorkbenchTab, { kind: "ter
 				return;
 			}
 			s.offset = at + chunk.length;
-			term.current?.write(chunk);
+			paint(chunk);
 		},
-		[pull],
+		[paint],
 	);
 
 	// The terminal itself: one per mount. Its palette is refreshed below rather than rebuilt.
@@ -182,7 +197,15 @@ export function XtermTerminal({ tab }: { tab: Extract<WorkbenchTab, { kind: "ter
 			fontFamily: '"JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace',
 			fontSize: isTouchPrimary() ? 13 : 12,
 			lineHeight: 1.2,
-			cursorBlink: true,
+			// Blinking is a CSS animation, and xterm only paints a block cursor when it is *not* blinking
+			// (`.xterm-cursor-block:not(.xterm-cursor-blink)`): with the app's motion switch off, every animation is
+			// squashed to a single 0.001 ms run, the cursor freezes on a transparent frame and vanishes. A steady block
+			// is always visible, which matters more on a phone than the blink.
+			cursorBlink: false,
+			cursorStyle: "block",
+			// xterm draws an outline when it believes the page has no focus, and on a phone that outline is a hairline
+			// nobody can see — the cursor looked missing. A block stays visible either way.
+			cursorInactiveStyle: "block",
 			scrollback: 5000,
 			macOptionIsMeta: true,
 			allowProposedApi: true,
@@ -198,6 +221,9 @@ export function XtermTerminal({ tab }: { tab: Extract<WorkbenchTab, { kind: "ter
 		}
 		term.current = xterm;
 		fitAddon.current = fit;
+		// DEC cursor-hide is sticky: anything in the shell's startup that sends `\x1b[?25l` would leave the terminal
+		// with no cursor at all for the rest of the session. Ask for it back explicitly.
+		xterm.write("\x1b[?25h");
 
 		const data = xterm.onData((input) => {
 			const mods = modsOf(heldRef.current);
@@ -209,17 +235,53 @@ export function XtermTerminal({ tab }: { tab: Extract<WorkbenchTab, { kind: "ter
 			send(input);
 		});
 
+		// xterm's own cursor is a coloured span around a character, and it gives up on empty cells: at the end of a
+		// line, on a blank line, and right after a space — which is where a terminal cursor sits almost all the time.
+		// Draw one here instead, from the buffer position, so it exists whatever the cell holds.
+		const syncCursor = () => {
+			const box = cursorBox.current;
+			const screen = xterm.element?.querySelector<HTMLElement>(".xterm-screen");
+			const container = host.current;
+			if (!box || !screen || !container) return;
+			const cw = screen.clientWidth / Math.max(1, xterm.cols);
+			const ch = screen.clientHeight / Math.max(1, xterm.rows);
+			if (!(cw > 0 && ch > 0)) return;
+			const from = screen.getBoundingClientRect();
+			const to = container.getBoundingClientRect();
+			const buffer = xterm.buffer.active;
+			box.style.width = `${cw}px`;
+			box.style.height = `${ch}px`;
+			box.style.opacity = "1";
+			box.style.transform = `translate(${Math.round(from.left - to.left + buffer.cursorX * cw)}px, ${Math.round(from.top - to.top + buffer.cursorY * ch)}px)`;
+		};
+
+		syncCursorRef.current = syncCursor;
+		syncCursor();
+
 		const ro = new ResizeObserver(() => {
 			try {
 				fit.fit();
+				// The pseudo-terminal's width was fixed when it started and cannot be changed from here, so keep xterm's
+				// column count pinned to it: letting it re-flow makes every wrapped line and every `ls` column disagree
+				// with what the shell thinks the screen looks like. Only the height follows the view.
+				const cols = lockedCols.current;
+				if (cols > 0 && xterm.cols !== cols) xterm.resize(cols, xterm.rows);
 			} catch {
 				/* hidden for a moment */
 			}
+			syncCursor();
 		});
 		ro.observe(el);
 
+		const painted = xterm.onRender(syncCursor);
+		const moved = xterm.onCursorMove(syncCursor);
+		const scrolled = xterm.onScroll(syncCursor);
+
 		return () => {
 			ro.disconnect();
+			painted.dispose();
+			moved.dispose();
+			scrolled.dispose();
 			data.dispose();
 			xterm.dispose();
 			term.current = null;
@@ -241,15 +303,25 @@ export function XtermTerminal({ tab }: { tab: Extract<WorkbenchTab, { kind: "ter
 		let off: (() => void) | undefined;
 		let unwatch: (() => void) | undefined;
 		session.current = { id: "", topic: "", offset: 0, primed: false };
+		lockedCols.current = 0;
 		term.current?.reset();
 		setStatus("opening");
 		setError("");
 
 		void (async () => {
 			try {
+				// Let layout settle first: a fit taken before the box has a size reports a one-column terminal, and the
+				// shell would then be started at that width and never agree with what is drawn.
+				await new Promise((r) => requestAnimationFrame(r));
+				try {
+					fitAddon.current?.fit();
+				} catch {
+					/* nothing to fit yet */
+				}
 				// The size the terminal wrapped to is the size the shell should assume; it cannot be changed later.
 				const cols = Math.max(20, term.current?.cols ?? 80);
 				const rows = Math.max(5, term.current?.rows ?? 24);
+				lockedCols.current = cols;
 				let id = terminalIds.get(tab.id);
 				if (!id) {
 					const opened = await quiet<{ id: string }>("open", { cwd: tab.cwd, cols, rows });
@@ -270,7 +342,9 @@ export function XtermTerminal({ tab }: { tab: Extract<WorkbenchTab, { kind: "ter
 				if (dead) return;
 				session.current.offset = all.next;
 				session.current.primed = true;
-				if (all.data) term.current?.write(all.data);
+				if (all.data) paint(all.data);
+				// The replay may itself contain a cursor-hide; put the cursor back after it.
+				term.current?.write("\x1b[?25h");
 				setStatus("ready");
 			} catch (e) {
 				if (dead) return;
@@ -292,6 +366,7 @@ export function XtermTerminal({ tab }: { tab: Extract<WorkbenchTab, { kind: "ter
 		if (id) void quiet("close", { id }).catch(() => undefined);
 		terminalIds.delete(tab.id);
 		session.current = { id: "", topic: "", offset: 0, primed: false };
+		lockedCols.current = 0;
 		term.current?.reset();
 		setStatus("opening");
 		setError("");
@@ -332,17 +407,19 @@ export function XtermTerminal({ tab }: { tab: Extract<WorkbenchTab, { kind: "ter
 				<button
 					type="button"
 					onClick={() => setPad(!pad)}
+					onMouseDown={(e) => e.preventDefault()}
 					aria-pressed={pad}
 					className={clsx("grid size-6 place-items-center rounded hover:bg-ink-800", pad ? "text-ember-300" : "text-ink-400 hover:text-ink-100")}
 					title={t("keys")}
 				>
 					<Keyboard className="size-3.5" />
 				</button>
-				<button type="button" onClick={() => send("\x03")} disabled={status !== "ready"} className="grid size-6 place-items-center rounded text-ink-400 hover:bg-ink-800 hover:text-rose-400 disabled:opacity-40" title={t("interrupt")}>
+				<button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => send("\x03")} disabled={status !== "ready"} className="grid size-6 place-items-center rounded text-ink-400 hover:bg-ink-800 hover:text-rose-400 disabled:opacity-40" title={t("interrupt")}>
 					<Square className="size-3.5" />
 				</button>
 				<button
 					type="button"
+					onMouseDown={(e) => e.preventDefault()}
 					onClick={() => {
 						setHeld([]);
 						send("\x0c");
@@ -355,7 +432,9 @@ export function XtermTerminal({ tab }: { tab: Extract<WorkbenchTab, { kind: "ter
 				</button>
 			</div>
 
-			<div ref={host} className="min-h-0 flex-1 overflow-hidden px-2 py-1" onClick={() => term.current?.focus()} />
+			<div ref={host} className="relative min-h-0 flex-1 overflow-hidden px-2 py-1" onClick={() => term.current?.focus()}>
+				<div ref={cursorBox} className="pointer-events-none absolute top-0 left-0 rounded-[1px] bg-ember-400/80 opacity-0" />
+			</div>
 
 			{status === "lost" && (
 				<div className="flex shrink-0 items-center gap-2 border-t hairline px-3 py-2 text-xs text-ink-400">
@@ -446,7 +525,7 @@ function KeyBar({ held, locked, custom, onPress, onCustomChange }: { held: Held[
 				</div>
 			)}
 
-			<div className="flex items-center gap-1 overflow-x-auto px-2 pt-1.5">
+			<div className="flex items-stretch gap-1 overflow-x-auto px-2 pt-1.5">
 				{MODIFIERS.map((m) => (
 					<PadKey key={m.id} onPress={() => onPress(m.id)} active={isHeld(m.id)} locked={isLocked(m.id)} title={t("holdHint")}>
 						{m.label}
@@ -457,7 +536,7 @@ function KeyBar({ held, locked, custom, onPress, onCustomChange }: { held: Held[
 				</PadKey>
 			</div>
 
-			<div className="flex items-center gap-1 overflow-x-auto px-2 py-1.5">
+			<div className="flex items-stretch gap-1 overflow-x-auto px-2 py-1.5">
 				{FIXED.filter((k) => k.id !== "tab").map((k) => (
 					<PadKey key={k.id} onPress={() => onPress(k.id)} active={isHeld(k.id)}>
 						{k.label}
@@ -471,30 +550,35 @@ function KeyBar({ held, locked, custom, onPress, onCustomChange }: { held: Held[
 				<button
 					type="button"
 					onClick={() => setEditing((v) => !v)}
+					onMouseDown={(e) => e.preventDefault()}
 					aria-pressed={editing}
 					title={t("add")}
 					aria-label={t("add")}
-					className={clsx("grid size-9 shrink-0 place-items-center rounded-lg border border-dashed transition-colors", editing ? "border-ember-500 text-ember-300" : "border-ink-700 text-ink-400 hover:border-ink-600 hover:text-ink-200")}
+					className={clsx(
+						"grid h-10 w-11 shrink-0 place-items-center rounded-lg border border-dashed transition-colors",
+						editing ? "border-ember-500 text-ember-300" : "border-ink-700 text-ink-400 hover:border-ink-600 hover:text-ink-200",
+					)}
 				>
 					<Plus className="size-4" />
 				</button>
 			</div>
-
-			{locked && <div className="px-2 pb-1 text-[10.5px] text-ember-300/80">{t("holdHint")}</div>}
 		</div>
 	);
 }
 
-/** One key: a thumb wide, and visibly held when a modifier is waiting for the rest of its combination. */
+/** One key: it grows to share the row, and shrinks no further than a thumb. Held keys change colour, not size. */
 function PadKey({ onPress, active, locked, mono, title, children }: { onPress: () => void; active?: boolean; locked?: boolean; mono?: boolean; title?: string; children: ReactNode }) {
 	return (
 		<button
 			type="button"
 			onClick={onPress}
+			// Moving the focus to this button would blur xterm's hidden textarea and dismiss the soft keyboard, which is
+			// exactly what a key bar must not do.
+			onMouseDown={(e) => e.preventDefault()}
 			title={title}
 			aria-pressed={active}
 			className={clsx(
-				"h-9 shrink-0 rounded-lg px-3 text-[12px] transition-colors",
+				"h-10 min-w-11 shrink-0 grow basis-11 rounded-lg px-3 text-[12px] transition-colors",
 				mono && "font-mono",
 				active
 					? locked
