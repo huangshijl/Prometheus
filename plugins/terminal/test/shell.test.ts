@@ -1,7 +1,9 @@
-import { mkdtemp, realpath } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { MAX_BUFFER, ShellSession, shellSpec } from "../src/shell.ts";
+import { cdTarget, commonPrefix, completePath, MAX_BUFFER, ptySpec, ShellSession, shellSpec } from "../src/shell.ts";
 
 const wait = async (s: ShellSession, pred: (all: string) => boolean, ms = 15_000) => {
 	const end = Date.now() + ms;
@@ -60,7 +62,7 @@ describe("ShellSession", () => {
 	});
 
 	it("caps its buffer and keeps offsets absolute", () => {
-		const s = new ShellSession("t", tmpdir(), { command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], init: "" });
+		const s = new ShellSession("t", tmpdir(), { command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], init: "", pty: false });
 		try {
 			// @ts-expect-error private, exercised on purpose
 			s.append("x".repeat(MAX_BUFFER + 10));
@@ -73,3 +75,116 @@ describe("ShellSession", () => {
 		}
 	});
 });
+
+describe("cdTarget", () => {
+	it("follows plain and quoted folders, and leaves anything a shell has to expand alone", async () => {
+		const dir = await realpath(await mkdtemp(`${tmpdir()}/term-cd-`));
+		const sub = join(dir, "sub");
+		await mkdir(sub);
+		expect(cdTarget("cd sub", dir)).toBe(sub);
+		expect(cdTarget('  cd "sub"  ', dir)).toBe(sub);
+		expect(cdTarget("cd 'sub'", dir)).toBe(sub);
+		expect(cdTarget(`cd ${sub}`, dir)).toBe(sub);
+		expect(cdTarget("cd $HOME", dir)).toBeUndefined();
+		expect(cdTarget("cd $(pwd)", dir)).toBeUndefined();
+		expect(cdTarget("cd sub && ls", dir)).toBeUndefined();
+		expect(cdTarget("cd nope", dir)).toBeUndefined();
+		expect(cdTarget("cd", dir)).toBeUndefined();
+		expect(cdTarget("ls -la", dir)).toBeUndefined();
+	});
+
+	it("restarts the shell in the folder the user cd'd into", async () => {
+		const dir = await realpath(await mkdtemp(`${tmpdir()}/term-restart-`));
+		await mkdir(join(dir, "sub"));
+		const s = new ShellSession("t", dir);
+		try {
+			s.run("cd sub");
+			s.interrupt();
+			s.run("pwd");
+			// The `cd sub` echo sits before the `> pwd` marker, so only the output after it counts.
+			const out = await wait(s, (a) => {
+				const at = a.indexOf("> pwd");
+				return at >= 0 && /sub/.test(a.slice(at));
+			});
+			expect(out).toContain("> pwd");
+		} finally {
+			s.close();
+		}
+	});
+});
+
+describe("completePath", () => {
+	it("lists folders first, shares a prefix, and hides dotfiles until asked", async () => {
+		const dir = await realpath(await mkdtemp(`${tmpdir()}/term-cmp-`));
+		await mkdir(join(dir, "src"));
+		await writeFile(join(dir, "src", "a.ts"), "");
+		await writeFile(join(dir, "story.md"), "");
+		await writeFile(join(dir, ".env"), "");
+
+		const root = await completePath(dir, "s");
+		expect(root.items.map((i) => i.label)).toEqual(["src/", "story.md"]);
+		expect(root.common).toBe("s");
+		expect(root.items[0]?.dir).toBe(true);
+
+		const inner = await completePath(dir, "src/");
+		expect(inner.items.map((i) => i.label)).toEqual(["a.ts"]);
+		expect(inner.items[0]?.insert).toBe("src/a.ts");
+
+		const hidden = await completePath(dir, ".");
+		expect(hidden.items.map((i) => i.label)).toEqual([".env"]);
+
+		expect((await completePath(dir, "zzz")).items).toHaveLength(0);
+	});
+
+	it("shares the longest start of the candidates", () => {
+		expect(commonPrefix(["src/", "story.md"])).toBe("s");
+		expect(commonPrefix(["alpha", "alpine"])).toBe("alp");
+		expect(commonPrefix(["only"])).toBe("only");
+		expect(commonPrefix([])).toBe("");
+	});
+});
+
+/** `script` is what makes a terminal; without it (Windows) the shell stays a pipe and these cases are moot. */
+const hasScript = process.platform !== "win32" && (process.env.PATH ?? "").split(":").some((d) => d && existsSync(join(d, "script")));
+
+describe("pseudo-terminal", () => {
+	it("is only offered where script(1) exists", () => {
+		expect(ptySpec("/bin/sh", { cols: 80, rows: 24 }, {}, "win32")).toBeUndefined();
+		const spec = ptySpec("/bin/sh", { cols: 100, rows: 30 }, { PATH: "/nonexistent" }, "linux");
+		expect(spec).toBeUndefined();
+	});
+
+	it.runIf(hasScript)("turns ^C into a signal instead of replacing the shell", async () => {
+		const dir = await realpath(await mkdtemp(`${tmpdir()}/term-pty-`));
+		const spec = ptySpec(shellSpec().command, { cols: 100, rows: 30 });
+		if (!spec) throw new Error("expected a terminal");
+		const s = new ShellSession("t", dir, spec);
+		try {
+			s.write("echo pty-marker\r");
+			await wait(s, (a) => /pty-marker\r?\n/.test(a));
+			s.interrupt();
+			await new Promise((r) => setTimeout(r, 300));
+			// The shell survived the interrupt, which is the whole point of having a terminal.
+			expect(s.alive).toBe(true);
+			s.write("echo still-here\r");
+			await wait(s, (a) => a.includes("still-here"));
+		} finally {
+			s.close();
+		}
+	});
+
+	it("streams every append with its absolute offset", async () => {
+		const dir = await realpath(await mkdtemp(`${tmpdir()}/term-sink-`));
+		const chunks: { from: number; text: string }[] = [];
+		const s = new ShellSession("t", dir, shellSpec(), (from, text) => chunks.push({ from, text }));
+		try {
+			s.run("echo sink-marker");
+			await wait(s, (a) => /^sink-marker\r?$/m.test(a));
+			expect(chunks[0]?.from).toBe(0);
+			expect(chunks.map((c) => c.text).join("")).toBe(s.read(0).data);
+		} finally {
+			s.close();
+		}
+	});
+});
+
