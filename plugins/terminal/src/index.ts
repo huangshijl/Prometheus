@@ -73,6 +73,8 @@ export default definePlugin({
 			need(p.id).interrupt();
 			return {};
 		});
+		// Read-only: a phone keyboard cannot reasonably type a path, so Tab asks the shell's own folder instead.
+		ctx.rpc("complete", (p) => need(p.id).complete(str(p.prefix)));
 		ctx.rpc("close", (p) => {
 			const s = sessions.get(str(p.id));
 			s?.close();

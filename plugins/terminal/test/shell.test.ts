@@ -1,7 +1,8 @@
-import { mkdtemp, realpath } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { MAX_BUFFER, ShellSession, shellSpec } from "../src/shell.ts";
+import { cdTarget, commonPrefix, completePath, MAX_BUFFER, ShellSession, shellSpec } from "../src/shell.ts";
 
 const wait = async (s: ShellSession, pred: (all: string) => boolean, ms = 15_000) => {
 	const end = Date.now() + ms;
@@ -71,5 +72,73 @@ describe("ShellSession", () => {
 		} finally {
 			s.close();
 		}
+	});
+});
+
+describe("cdTarget", () => {
+	it("follows plain and quoted folders, and leaves anything a shell has to expand alone", async () => {
+		const dir = await realpath(await mkdtemp(`${tmpdir()}/term-cd-`));
+		const sub = join(dir, "sub");
+		await mkdir(sub);
+		expect(cdTarget("cd sub", dir)).toBe(sub);
+		expect(cdTarget('  cd "sub"  ', dir)).toBe(sub);
+		expect(cdTarget("cd 'sub'", dir)).toBe(sub);
+		expect(cdTarget(`cd ${sub}`, dir)).toBe(sub);
+		expect(cdTarget("cd $HOME", dir)).toBeUndefined();
+		expect(cdTarget("cd $(pwd)", dir)).toBeUndefined();
+		expect(cdTarget("cd sub && ls", dir)).toBeUndefined();
+		expect(cdTarget("cd nope", dir)).toBeUndefined();
+		expect(cdTarget("cd", dir)).toBeUndefined();
+		expect(cdTarget("ls -la", dir)).toBeUndefined();
+	});
+
+	it("restarts the shell in the folder the user cd'd into", async () => {
+		const dir = await realpath(await mkdtemp(`${tmpdir()}/term-restart-`));
+		await mkdir(join(dir, "sub"));
+		const s = new ShellSession("t", dir);
+		try {
+			s.run("cd sub");
+			s.interrupt();
+			s.run("pwd");
+			// The `cd sub` echo sits before the `> pwd` marker, so only the output after it counts.
+			const out = await wait(s, (a) => {
+				const at = a.indexOf("> pwd");
+				return at >= 0 && /sub/.test(a.slice(at));
+			});
+			expect(out).toContain("> pwd");
+		} finally {
+			s.close();
+		}
+	});
+});
+
+describe("completePath", () => {
+	it("lists folders first, shares a prefix, and hides dotfiles until asked", async () => {
+		const dir = await realpath(await mkdtemp(`${tmpdir()}/term-cmp-`));
+		await mkdir(join(dir, "src"));
+		await writeFile(join(dir, "src", "a.ts"), "");
+		await writeFile(join(dir, "story.md"), "");
+		await writeFile(join(dir, ".env"), "");
+
+		const root = await completePath(dir, "s");
+		expect(root.items.map((i) => i.label)).toEqual(["src/", "story.md"]);
+		expect(root.common).toBe("s");
+		expect(root.items[0]?.dir).toBe(true);
+
+		const inner = await completePath(dir, "src/");
+		expect(inner.items.map((i) => i.label)).toEqual(["a.ts"]);
+		expect(inner.items[0]?.insert).toBe("src/a.ts");
+
+		const hidden = await completePath(dir, ".");
+		expect(hidden.items.map((i) => i.label)).toEqual([".env"]);
+
+		expect((await completePath(dir, "zzz")).items).toHaveLength(0);
+	});
+
+	it("shares the longest start of the candidates", () => {
+		expect(commonPrefix(["src/", "story.md"])).toBe("s");
+		expect(commonPrefix(["alpha", "alpine"])).toBe("alp");
+		expect(commonPrefix(["only"])).toBe("only");
+		expect(commonPrefix([])).toBe("");
 	});
 });
