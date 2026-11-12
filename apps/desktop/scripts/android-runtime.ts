@@ -18,9 +18,10 @@ const ABI = "arm64-v8a";
 const SKIP = new Set(["ca-certificates", "resolv-conf"]);
 // Termux packages to ship. Executables become lib*.so files in jniLibs, the only place Android lets an app execute from.
 // proot runs the on-demand runtimes (Python, Go, Rust) from an Ubuntu rootfs the app downloads later; see src-tauri/src/runtimes.rs.
-const PACKAGES = ["nodejs-lts", "npm", "git", "bash", "ripgrep", "proot"];
-// Binaries from those packages exposed on PATH (see EXEC_PREFIX in src-tauri/src/android.rs).
-const BINARIES = ["git", "bash", "rg", "proot"];
+const PACKAGES = ["nodejs-lts", "npm", "git", "bash", "ripgrep", "proot", "util-linux", "coreutils"];
+// Binaries from those packages exposed on PATH (see EXEC_PREFIX in src-tauri/src/android.rs). `script` is what gives the
+// built-in terminal a pseudo-terminal; `stty` is how that terminal is told how wide the screen is.
+const BINARIES = ["git", "bash", "rg", "proot", "script", "stty"];
 // Tools that run inside the PRoot rootfs: runtime id -> command names. Each becomes a shim that is only put on PATH once that runtime is installed.
 const GUEST_SHIMS: Record<string, Record<string, string>> = {
 	python: { python: "python3", python3: "python3", pip: "pip3", pip3: "pip3" },
