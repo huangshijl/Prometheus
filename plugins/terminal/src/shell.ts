@@ -57,7 +57,10 @@ export function ptySpec(shell: string, size: TerminalSize, env: NodeJS.ProcessEn
 	if (platform === "win32") return undefined;
 	const script = findExecutable("script", env);
 	if (!script) return undefined;
-	const inner = `stty rows ${size.rows} cols ${size.cols} 2>/dev/null; exec ${shell}`;
+	// A bundled bash finds no rc file on Android, so it falls back to its own `bash-5.3$ `. On a phone the screen is
+	// narrow enough that `user@host:path` eats a line before anything is typed, so the prompt is just `$`.
+	const prompt = /(?:^|\/)bash$/.test(shell) ? `export PS1='\\$ '; ` : "";
+	const inner = `stty rows ${size.rows} cols ${size.cols} 2>/dev/null; ${prompt}exec ${shell}`;
 	// util-linux takes the command after -c; BSD (macOS) takes it as the trailing arguments.
 	const bsd = platform === "darwin" || platform === "freebsd";
 	const args = bsd ? ["-q", "/dev/null", shell, "-c", inner] : ["-q", "-c", inner, "/dev/null"];
