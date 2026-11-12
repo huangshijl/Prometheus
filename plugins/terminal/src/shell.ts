@@ -12,6 +12,8 @@ export interface ShellSpec {
 	args: string[];
 	/** Lines written to the shell before the user's first command. */
 	init: string;
+	/** True when the command runs under a pseudo-terminal: the shell echoes, ^C is a signal, and readline works. */
+	pty: boolean;
 }
 
 export function shellSpec(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): ShellSpec {
@@ -20,11 +22,46 @@ export function shellSpec(platform: NodeJS.Platform = process.platform, env: Nod
 			command: "powershell.exe",
 			args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "-"],
 			init: "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8\n",
+			pty: false,
 		};
 	}
 	// Android has no /bin/bash; its system shell is /system/bin/sh. Termux builds of Node report the platform as "android".
 	const fallback = platform === "android" || !existsSync("/bin/bash") ? "/system/bin/sh" : "/bin/bash";
-	return { command: env.SHELL || (existsSync(fallback) ? fallback : "sh"), args: [], init: "" };
+	return { command: env.SHELL || (existsSync(fallback) ? fallback : "sh"), args: [], init: "", pty: false };
+}
+
+/** PATH lookup without a shell: `script` is the program that hands out the pseudo-terminal. */
+function findExecutable(name: string, env: NodeJS.ProcessEnv): string | undefined {
+	for (const dir of (env.PATH ?? "").split(process.platform === "win32" ? ";" : ":")) {
+		if (!dir) continue;
+		const full = join(dir, name);
+		if (existsSync(full)) return full;
+	}
+	return undefined;
+}
+
+export interface TerminalSize {
+	cols: number;
+	rows: number;
+}
+
+/**
+ * The same shell, but under a pseudo-terminal — which is the whole difference between "runs commands" and "a terminal":
+ * ^C becomes a real SIGINT for the foreground job, Tab reaches readline, and full-screen programs (vim, top, less) draw.
+ *
+ * The terminal comes from `script`, present in util-linux (Linux, Termux on Android) and in BSD/macOS. Windows ships
+ * nothing comparable, so it keeps the pipe and the line editor. The size is set once at startup with `stty`: the wrapper
+ * cannot be resized from the outside afterwards.
+ */
+export function ptySpec(shell: string, size: TerminalSize, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): ShellSpec | undefined {
+	if (platform === "win32") return undefined;
+	const script = findExecutable("script", env);
+	if (!script) return undefined;
+	const inner = `stty rows ${size.rows} cols ${size.cols} 2>/dev/null; exec ${shell}`;
+	// util-linux takes the command after -c; BSD (macOS) takes it as the trailing arguments.
+	const bsd = platform === "darwin" || platform === "freebsd";
+	const args = bsd ? ["-q", "/dev/null", shell, "-c", inner] : ["-q", "-c", inner, "/dev/null"];
+	return { command: script, args, init: "", pty: true };
 }
 
 export interface ReadResult {
@@ -123,31 +160,42 @@ export class ShellSession {
 	 * The folder to start in next time: the last `cd` that could be resolved, or the one the terminal was opened in.
 	 * Pipes cannot carry ^C, so interrupting replaces the shell — without this it would also forget where the user was.
 	 */
+	/** Where a restarted shell should start: only used by the pipe flavour, which has to replace the shell to stop work. */
 	private cwdHint: string;
+	/** Called with the absolute offset and the text of every append, so a watching client can follow along without polling. */
+	private readonly sink: ((from: number, text: string) => void) | undefined;
 	lastUsed = Date.now();
 
-	constructor(id: string, cwd: string, spec: ShellSpec = shellSpec()) {
+	constructor(id: string, cwd: string, spec: ShellSpec = shellSpec(), sink?: (from: number, text: string) => void) {
 		this.id = id;
 		this.cwd = cwd;
 		this.cwdHint = cwd;
 		this.spec = spec;
+		this.sink = sink;
 		this.start();
 	}
 
 	private append(text: string): void {
+		const from = this.base + this.buf.length;
 		this.buf += text;
 		if (this.buf.length > MAX_BUFFER) {
 			const drop = this.buf.length - MAX_BUFFER;
 			this.buf = this.buf.slice(drop);
 			this.base += drop;
 		}
+		// Text that has already been dropped cannot be streamed; a reader falls back to `read` for that window.
+		if (from >= this.base) this.sink?.(from, text);
 	}
 
 	private start(): void {
 		this.exitCode = null;
+		// A terminal has to claim to be one, or programs refuse to colour, paginate or go full screen.
+		const env: NodeJS.ProcessEnv = { ...process.env, TERM: this.spec.pty ? "xterm-256color" : "dumb" };
+		if (this.spec.pty) delete env.NO_COLOR;
+		else env.NO_COLOR = "1";
 		const proc = spawn(this.spec.command, this.spec.args, {
 			cwd: this.cwd,
-			env: { ...process.env, TERM: "dumb", NO_COLOR: "1" },
+			env,
 			stdio: ["pipe", "pipe", "pipe"],
 			windowsHide: true,
 			detached: process.platform !== "win32",
@@ -181,14 +229,26 @@ export class ShellSession {
 		return { data: this.buf.slice(from - this.base), next: this.base + this.buf.length, alive: this.alive, exitCode: this.exitCode };
 	}
 
-	/** Send one command line; it is echoed into the output so history survives a reload. */
+	/** Send one command line; under a pipe it is echoed into the output so history survives a reload. */
 	run(line: string): void {
 		this.lastUsed = Date.now();
 		if (!this.alive) throw new Error("shell 已退出，请重启终端");
+		if (this.spec.pty) {
+			// The terminal echoes what is typed, so nothing is added to the buffer here.
+			this.proc?.stdin?.write(`${line}\r`);
+			return;
+		}
 		this.append(`> ${line}\n`);
 		this.proc?.stdin?.write(`${line}\n`);
 		const next = cdTarget(line, this.cwdHint);
 		if (next) this.cwdHint = next;
+	}
+
+	/** Raw keystrokes, control characters included: what a terminal sends when a key is pressed. */
+	write(data: string): void {
+		this.lastUsed = Date.now();
+		if (!this.alive) throw new Error("shell 已退出，请重启终端");
+		this.proc?.stdin?.write(data.slice(0, 4096));
 	}
 
 	/** Candidates for the word in front of the caret, read from the folder the shell is in. */
@@ -197,8 +257,13 @@ export class ShellSession {
 		return completePath(this.cwdHint, prefix.slice(0, 512));
 	}
 
-	/** Stop whatever is running by replacing the shell (pipes cannot carry Ctrl+C). Output so far is kept. */
+	/** Stop whatever is running. A terminal takes ^C; a pipe has to replace the shell, and says where it came back to. */
 	interrupt(): void {
+		if (this.spec.pty) {
+			// The tty driver turns this into SIGINT for the foreground job; the shell and its folder survive.
+			this.proc?.stdin?.write("\x03");
+			return;
+		}
 		this.append("^C\n");
 		// The replacement shell is walked back to this folder; say so, or the user cannot tell the state survived.
 		if (this.cwdHint !== this.cwd) this.append(`[回到 ${this.cwdHint}]\n`);

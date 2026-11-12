@@ -4,6 +4,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { isTouchPrimary } from "../lib/backend.ts";
 import { defineMessages, useT } from "../lib/i18n.ts";
 import { terminalIds, useStore, type WorkbenchTab } from "../lib/store.ts";
+import { XtermTerminal } from "./XtermTerminal.tsx";
 
 const M = defineMessages({
 	zh: {
@@ -59,7 +60,7 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 /** The word the caret is in, as the shell would see it: everything back to the last blank. */
 const wordStart = (value: string, at: number) => at - (/\S*$/.exec(value.slice(0, at))?.[0].length ?? 0);
 
-export function TerminalView({ tab }: { tab: Extract<WorkbenchTab, { kind: "terminal" }> }) {
+export function PipeTerminal({ tab }: { tab: Extract<WorkbenchTab, { kind: "terminal" }> }) {
 	const t = useT(M);
 	const [text, setText] = useState("");
 	const [alive, setAlive] = useState(true);
@@ -326,4 +327,32 @@ function Key({ title, onPress, children }: { title: string; onPress: () => void;
 			{children}
 		</button>
 	);
+}
+
+/** Whether this host can hand out a real terminal. Asked once: it depends on the platform, not on the session. */
+let ptyCapable: boolean | undefined;
+const detectPty = async (): Promise<boolean> => {
+	if (ptyCapable !== undefined) return ptyCapable;
+	const r = await quiet<{ pty: boolean }>("caps").catch(() => undefined);
+	// A failed probe says nothing about the host (still connecting); only a real answer is remembered.
+	if (!r) return false;
+	ptyCapable = r.pty;
+	return ptyCapable;
+};
+
+/**
+ * The terminal tab. Where the server can hand out a pseudo-terminal (Linux, Android) the view is xterm.js and a shell
+ * behaves like a shell; where it cannot (Windows) the pipe version keeps the line editor and its key bar instead.
+ */
+export function TerminalView({ tab }: { tab: Extract<WorkbenchTab, { kind: "terminal" }> }) {
+	const [pty, setPty] = useState<boolean | null>(null);
+	useEffect(() => {
+		let dead = false;
+		void detectPty().then((ok) => !dead && setPty(ok));
+		return () => {
+			dead = true;
+		};
+	}, []);
+	if (pty === null) return <div className="grid h-full place-items-center bg-ink-950 text-xs text-ink-500">…</div>;
+	return pty ? <XtermTerminal tab={tab} /> : <PipeTerminal tab={tab} />;
 }

@@ -1,8 +1,9 @@
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { cdTarget, commonPrefix, completePath, MAX_BUFFER, ShellSession, shellSpec } from "../src/shell.ts";
+import { cdTarget, commonPrefix, completePath, MAX_BUFFER, ptySpec, ShellSession, shellSpec } from "../src/shell.ts";
 
 const wait = async (s: ShellSession, pred: (all: string) => boolean, ms = 15_000) => {
 	const end = Date.now() + ms;
@@ -61,7 +62,7 @@ describe("ShellSession", () => {
 	});
 
 	it("caps its buffer and keeps offsets absolute", () => {
-		const s = new ShellSession("t", tmpdir(), { command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], init: "" });
+		const s = new ShellSession("t", tmpdir(), { command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], init: "", pty: false });
 		try {
 			// @ts-expect-error private, exercised on purpose
 			s.append("x".repeat(MAX_BUFFER + 10));
@@ -142,3 +143,48 @@ describe("completePath", () => {
 		expect(commonPrefix([])).toBe("");
 	});
 });
+
+/** `script` is what makes a terminal; without it (Windows) the shell stays a pipe and these cases are moot. */
+const hasScript = process.platform !== "win32" && (process.env.PATH ?? "").split(":").some((d) => d && existsSync(join(d, "script")));
+
+describe("pseudo-terminal", () => {
+	it("is only offered where script(1) exists", () => {
+		expect(ptySpec("/bin/sh", { cols: 80, rows: 24 }, {}, "win32")).toBeUndefined();
+		const spec = ptySpec("/bin/sh", { cols: 100, rows: 30 }, { PATH: "/nonexistent" }, "linux");
+		expect(spec).toBeUndefined();
+	});
+
+	it.runIf(hasScript)("turns ^C into a signal instead of replacing the shell", async () => {
+		const dir = await realpath(await mkdtemp(`${tmpdir()}/term-pty-`));
+		const spec = ptySpec(shellSpec().command, { cols: 100, rows: 30 });
+		if (!spec) throw new Error("expected a terminal");
+		const s = new ShellSession("t", dir, spec);
+		try {
+			s.write("echo pty-marker\r");
+			await wait(s, (a) => /pty-marker\r?\n/.test(a));
+			s.interrupt();
+			await new Promise((r) => setTimeout(r, 300));
+			// The shell survived the interrupt, which is the whole point of having a terminal.
+			expect(s.alive).toBe(true);
+			s.write("echo still-here\r");
+			await wait(s, (a) => a.includes("still-here"));
+		} finally {
+			s.close();
+		}
+	});
+
+	it("streams every append with its absolute offset", async () => {
+		const dir = await realpath(await mkdtemp(`${tmpdir()}/term-sink-`));
+		const chunks: { from: number; text: string }[] = [];
+		const s = new ShellSession("t", dir, shellSpec(), (from, text) => chunks.push({ from, text }));
+		try {
+			s.run("echo sink-marker");
+			await wait(s, (a) => /^sink-marker\r?$/m.test(a));
+			expect(chunks[0]?.from).toBe(0);
+			expect(chunks.map((c) => c.text).join("")).toBe(s.read(0).data);
+		} finally {
+			s.close();
+		}
+	});
+});
+
