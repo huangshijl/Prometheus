@@ -513,3 +513,39 @@ html[data-entering] #root { animation: app-in 0.7s cubic-bezier(0.2, 0.8, 0.2, 1
 		animation: none;
 	}
 }
+
+/* ───────── Terminal cursor ─────────
+   xterm only paints a block cursor while it is *not* blinking (`.xterm-cursor-block:not(.xterm-cursor-blink)`), and
+   the motion switch above flattens every animation to a single 0.001 ms run — the blink then freezes on its transparent
+   frame and the cursor looks like it is missing entirely. One steady, always-visible cursor is the better trade on a
+   phone; the #root prefix wins on specificity against xterm's own generated rules. */
+#root .xterm .xterm-cursor {
+	animation: none !important;
+	/* No shape class at all is one of the states xterm can end up in (an unfocused or freshly opened terminal), and
+	   then nothing in its own sheet paints the cell — so colour the element itself, whatever it is called. */
+	background-color: var(--color-ember-400) !important;
+	color: var(--color-ink-950) !important;
+}
+
+#root .xterm .xterm-cursor.xterm-cursor-block,
+#root .xterm .xterm-cursor.xterm-cursor-block.xterm-cursor-blink {
+	background-color: var(--color-ember-400) !important;
+	color: var(--color-ink-950) !important;
+}
+
+#root .xterm .xterm-cursor.xterm-cursor-bar,
+#root .xterm .xterm-cursor.xterm-cursor-bar.xterm-cursor-blink {
+	box-shadow: 2px 0 0 var(--color-ember-400) inset !important;
+}
+
+#root .xterm .xterm-cursor.xterm-cursor-outline {
+	outline: 2px solid var(--color-ember-400) !important;
+	outline-offset: -1px;
+}
+
+/* xterm's DOM renderer puts one span per cell and relies on the row whitespace being preserved; without this every
+   run of spaces collapses into one, which shows up as mangled `ls` columns and — because the cursor span sits on an
+   empty cell — as a cursor that only appears when it happens to be on a character. */
+#root .xterm .xterm-rows {
+	white-space: pre;
+}
