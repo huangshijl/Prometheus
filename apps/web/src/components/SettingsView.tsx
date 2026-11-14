@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import { BarChart3, Blocks, Bug, Boxes, Bot, Info, Cable, Check, FolderOpen, Globe, Laptop, Layers, Mic, Moon, Network, Package, Palette, MessageCircle, MessagesSquare, Plug, Server, Shield, Sparkles, Sun, SlidersHorizontal, Terminal } from "lucide-react";
-import type { ReactNode } from "react";
+import type { ReactNode, TouchEvent as ReactTouchEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isAndroid, isDesktopShell, isTauri, loadMode } from "../lib/backend.ts";
 import { defineMessages, useT } from "../lib/i18n.ts";
@@ -915,15 +915,56 @@ export function SettingsView() {
 		void initRuntimes();
 	}, []);
 	const groups = TAB_GROUPS.map((g) => g.filter((x) => (!x.plugin || pluginActive(plugins, x.plugin)) && (!x.local || localShell))).filter((g) => g.length > 0);
+	/** 可见标签的先后顺序，左右滑动按这个顺序走，跳过的标签（插件未启用）不占位置。 */
+	const order = groups.flat().map((x) => x.id);
+	const navRef = useRef<HTMLElement>(null);
+	const touchStart = useRef<{ x: number; y: number; at: number } | null>(null);
+
+	// 手机上标签栏是横向滚动的，滑到靠后的标签时把它带进视野，否则看不出当前在哪一页。
+	useEffect(() => {
+		navRef.current?.querySelector<HTMLElement>(`[data-tab="${tab}"]`)?.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+	}, [tab]);
+
+	/** 触屏上左右滑动切标签；输入框里选字、横向可滚动的表格或代码块里滑动都不算。 */
+	const onTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
+		touchStart.current = null;
+		if (!window.matchMedia?.("(pointer: coarse)").matches) return;
+		if (e.touches.length !== 1) return;
+		const el = e.target as HTMLElement | null;
+		if (!el || el.closest("input, textarea, select, [contenteditable='true']")) return;
+		for (let p: HTMLElement | null = el; p && p !== (e.currentTarget as HTMLElement); p = p.parentElement) {
+			if (p.scrollWidth > p.clientWidth + 1 && /(auto|scroll)/.test(getComputedStyle(p).overflowX)) return;
+		}
+		const first = e.touches[0];
+		if (first) touchStart.current = { x: first.clientX, y: first.clientY, at: Date.now() };
+	};
+
+	const onTouchEnd = (e: ReactTouchEvent<HTMLDivElement>) => {
+		const start = touchStart.current;
+		touchStart.current = null;
+		if (!start) return;
+		const last = e.changedTouches[0];
+		if (!last) return;
+		const dx = last.clientX - start.x;
+		const dy = last.clientY - start.y;
+		// 划过 60px、明显是横向、且不是慢慢拖出来的，才算切页。
+		if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.2 || Date.now() - start.at > 700) return;
+		const i = order.indexOf(tab);
+		if (i < 0) return;
+		const next = dx < 0 ? order[i + 1] : order[i - 1];
+		if (next) openSettings(next);
+	};
+
 	return (
 		<div className="@container flex min-h-0 flex-1 flex-col overflow-hidden @2xl:flex-row">
-			<nav className="flex shrink-0 gap-1 overflow-x-auto border-b hairline p-2 @2xl:block @2xl:min-h-0 @2xl:w-44 @2xl:space-y-0.5 @2xl:overflow-x-hidden @2xl:overflow-y-auto @2xl:border-r @2xl:border-b-0 @2xl:p-3">
+			<nav ref={navRef} className="flex shrink-0 gap-1 overflow-x-auto border-b hairline p-2 @2xl:block @2xl:min-h-0 @2xl:w-44 @2xl:space-y-0.5 @2xl:overflow-x-hidden @2xl:overflow-y-auto @2xl:border-r @2xl:border-b-0 @2xl:p-3">
 				{groups.map((group, i) => (
 					<div key={group[0]?.id} className={clsx("flex shrink-0 gap-1 @2xl:block @2xl:space-y-0.5", i > 0 && "border-l hairline pl-1 @2xl:mt-2 @2xl:border-t @2xl:border-l-0 @2xl:pt-2 @2xl:pl-0")}>
 						{group.map(({ id, icon: Icon }) => (
 							<button
 								key={id}
 								type="button"
+								data-tab={id}
 								onClick={() => openSettings(id)}
 								className={clsx(
 									"flex shrink-0 items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm whitespace-nowrap transition-colors @2xl:w-full",
@@ -937,7 +978,7 @@ export function SettingsView() {
 					</div>
 				))}
 			</nav>
-			<div className="@container flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+			<div className="@container flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
 				{tab === "general" && <GeneralSettings />}
 				{tab === "appearance" && <AppearanceSettings />}
 				{tab === "chat" && <ChatSettings />}
