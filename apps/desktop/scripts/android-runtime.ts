@@ -459,7 +459,8 @@ try {
 	if (!activity.includes("fun safeTop")) {
 		activity = activity.replace(/inner class SystemBarBridge \{\n/, () => `inner class SystemBarBridge {\n${bridgeExtraSource()}`);
 		activity = activity.replace(/\n\}\s*$/, () => `\n${insetsSource()}}\n`);
-		activity = activity.replace(/(super\.onWebViewCreate\(webView\)\n)/, () => `$1    installInsets(webView)\n`);
+		// A replacer function gets the match, not `$1`: the group cannot be referenced from a template literal.
+		activity = activity.replace(/(super\.onWebViewCreate\(webView\)\n)/, (m) => `${m}    installInsets(webView)\n`);
 		if (!activity.includes("fun safeTop") || !activity.includes("installInsets(webView)")) throw new Error("could not patch MainActivity.kt (template changed?)");
 	}
 	// The guest's DNS servers are a third, independent patch: the phone's network is not visible from inside PRoot.
