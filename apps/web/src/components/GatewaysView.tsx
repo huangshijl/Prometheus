@@ -1,7 +1,7 @@
 import clsx from "clsx";
 import { confirmDialog } from "../lib/dialogs.ts";
 import { CloudDownload, Coins, DatabaseZap, Download, ExternalLink, LoaderCircle, Network, Plus, Search, SlidersHorizontal, Trash2, X, Zap } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { GATEWAY_PRESETS, gatewayFormats } from "@prometheus/protocol";
 import type { GatewayAuth, GatewayConfig, GatewayFormat, GatewayModel, GatewayPreset, ModelPricing, PiGatewayInfo } from "@prometheus/protocol";
 import { localizeError } from "../lib/errors.ts";
@@ -70,6 +70,8 @@ const M = defineMessages({
 		save: "保存",
 		searchModels: "搜索 {n} 个模型…",
 		selected: "已选 {n}",
+		selectAll: "全选",
+		clearAll: "取消全选",
 		noMatch: "没有匹配的模型",
 		pickTitle: "选择服务商",
 		pickHint: "内置主流厂商，选择后只需填写 API Key",
@@ -155,6 +157,8 @@ const M = defineMessages({
 		save: "Save",
 		searchModels: "Search {n} models…",
 		selected: "{n} selected",
+		selectAll: "Select all",
+		clearAll: "Clear all",
 		noMatch: "No matching models",
 		pickTitle: "Choose a provider",
 		pickHint: "Popular providers are built in; just enter your API key",
@@ -516,6 +520,16 @@ function GatewayEditor({ initial, isNew, preset, onClose, onSaved }: { initial: 
 			return kept.some((y) => y.id === m.id) ? { ...x, models: kept.filter((y) => y.id !== m.id) } : { ...x, models: [...kept, m] };
 		});
 
+	/** 全选/取消全选：只影响传进来的这批（列表里当前搜到的），其余已选模型原样保留。 */
+	const toggleModels = (models: GatewayModel[], on: boolean) =>
+		setG((x) => {
+			const kept = x.models.filter((y) => y.id.trim());
+			const ids = new Set(models.map((m) => m.id));
+			if (!on) return { ...x, models: kept.filter((y) => !ids.has(y.id)) };
+			const have = new Set(kept.map((y) => y.id));
+			return { ...x, models: [...kept, ...models.filter((m) => !have.has(m.id))] };
+		});
+
 	const save = async () => {
 		setBusy(true);
 		const gateway = draft();
@@ -741,7 +755,7 @@ function GatewayEditor({ initial, isNew, preset, onClose, onSaved }: { initial: 
 							</Button>
 						</div>
 						<Input value={defaultsUrl} onChange={(e) => setDefaultsUrl(e.target.value)} placeholder="https://models.opencode.ai/api.json" aria-label={t("defaultsUrl")} title={t("defaultsUrl")} className="font-mono text-xs" spellCheck={false} />
-						{catalogue && <ModelCatalogue list={catalogue} selected={g.models} onToggle={toggleModel} onClose={() => setCatalogue(null)} />}
+						{catalogue && <ModelCatalogue list={catalogue} selected={g.models} onToggle={toggleModel} onToggleMany={toggleModels} onClose={() => setCatalogue(null)} />}
 					</div>
 				</Field>
 				</>
@@ -780,18 +794,71 @@ function GatewayEditor({ initial, isNew, preset, onClose, onSaved }: { initial: 
 	);
 }
 
-function ModelCatalogue({ list, selected, onToggle, onClose }: { list: GatewayModel[]; selected: GatewayModel[]; onToggle: (m: GatewayModel) => void; onClose: () => void }) {
+function ModelCatalogue({
+	list,
+	selected,
+	onToggle,
+	onToggleMany,
+	onClose,
+}: {
+	list: GatewayModel[];
+	selected: GatewayModel[];
+	onToggle: (m: GatewayModel) => void;
+	onToggleMany: (models: GatewayModel[], on: boolean) => void;
+	onClose: () => void;
+}) {
 	const t = useT(M);
 	const [q, setQ] = useState("");
 	const chosen = new Set(selected.map((m) => m.id));
 	const filtered = list.filter((m) => `${m.id} ${m.name ?? ""}`.toLowerCase().includes(q.toLowerCase()));
+	const allChosen = filtered.length > 0 && filtered.every((m) => chosen.has(m.id));
+	const searchRef = useRef<HTMLInputElement>(null);
+	const boxRef = useRef<HTMLDivElement>(null);
+
+	// 桌面自动聚焦搜索框方便直接打字；手机上不抢焦点，否则一弹出列表键盘就顶上来把页面推走。
+	useEffect(() => {
+		if (window.matchMedia?.("(pointer: fine)").matches) searchRef.current?.focus();
+	}, []);
+
+	/**
+	 * 选中一个模型，上面的模型信息就多一整块卡片，整个对话框变高，这份列表被顶下去。
+	 * 记住列表此刻在屏幕上的位置，状态更新完再把滚动容器补回同样距离，视线就停在原处。
+	 */
+	const keepPlace = (fn: () => void) => {
+		const el = boxRef.current;
+		if (!el) {
+			fn();
+			return;
+		}
+		const before = el.getBoundingClientRect().top;
+		fn();
+		requestAnimationFrame(() => {
+			const shift = el.getBoundingClientRect().top - before;
+			if (!shift) return;
+			for (let p = el.parentElement; p; p = p.parentElement) {
+				if (p.scrollHeight <= p.clientHeight + 1) continue;
+				if (!/(auto|scroll)/.test(getComputedStyle(p).overflowY)) continue;
+				p.scrollTop += shift;
+				return;
+			}
+		});
+	};
+
 	return (
-		<div className="mt-2 overflow-hidden rounded-xl border border-ink-700 bg-ink-950/50">
+		<div ref={boxRef} className="mt-2 overflow-hidden rounded-xl border border-ink-700 bg-ink-950/50">
 			<div className="flex items-center gap-2 border-b border-ink-800 px-3">
-				<Search className="size-3.5 text-ink-500" />
-				<input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("searchModels", { n: list.length })} className="w-full bg-transparent py-2 text-sm focus:outline-none" />
-				<span className="font-mono text-[11px] whitespace-nowrap text-ink-500">{t("selected", { n: selected.filter((m) => m.id.trim()).length })}</span>
-				<button type="button" onClick={onClose} className="rounded p-1 text-ink-500 hover:bg-ink-800 hover:text-ink-100" aria-label={t("close")}>
+				<Search className="size-3.5 shrink-0 text-ink-500" />
+				<input ref={searchRef} value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("searchModels", { n: list.length })} className="w-full min-w-0 bg-transparent py-2 text-sm focus:outline-none" />
+				<span className="shrink-0 font-mono text-[11px] whitespace-nowrap text-ink-500">{t("selected", { n: selected.filter((m) => m.id.trim()).length })}</span>
+				<button
+					type="button"
+					disabled={!filtered.length}
+					onClick={() => keepPlace(() => onToggleMany(filtered, !allChosen))}
+					className="shrink-0 rounded-md border border-ink-700 px-2 py-1 text-xs whitespace-nowrap text-ink-300 transition-colors hover:border-ember-500/50 hover:text-ink-100 disabled:opacity-40"
+				>
+					{allChosen ? t("clearAll") : t("selectAll")}
+				</button>
+				<button type="button" onClick={onClose} className="shrink-0 rounded p-1 text-ink-500 hover:bg-ink-800 hover:text-ink-100" aria-label={t("close")}>
 					<X className="size-3.5" />
 				</button>
 			</div>
@@ -799,7 +866,7 @@ function ModelCatalogue({ list, selected, onToggle, onClose }: { list: GatewayMo
 				{filtered.length === 0 && <p className="py-6 text-center text-sm text-ink-500">{t("noMatch")}</p>}
 				{filtered.map((m) => (
 					<label key={m.id} className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-1.5 hover:bg-ink-850">
-						<input type="checkbox" checked={chosen.has(m.id)} onChange={() => onToggle(m)} className="accent-ember-500" />
+						<input type="checkbox" checked={chosen.has(m.id)} onChange={() => keepPlace(() => onToggle(m))} className="accent-ember-500" />
 						<span className="min-w-0 flex-1 truncate font-mono text-[13px] text-ink-100">{m.id}</span>
 						{m.name && m.name !== m.id && <span className="hidden max-w-40 truncate text-xs text-ink-500 @xl:inline">{m.name}</span>}
 						{m.reasoning && <Badge tone="sky">{t("reasoning")}</Badge>}
