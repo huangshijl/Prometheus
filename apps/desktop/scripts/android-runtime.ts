@@ -149,7 +149,14 @@ function extractDeb(deb: string, into: string, work: string, name: string): void
 	execFileSync("ar", ["x", deb], { cwd: dir });
 	const data = readdirSync(dir).find((f) => f.startsWith("data.tar"));
 	if (!data) throw new Error(`${name}: no data archive`);
-	execFileSync("tar", ["-xf", join(dir, data), "-C", into]);
+	let archive = join(dir, data);
+	// Windows 的 bsdtar 解 xz 时会另起 xz 进程，管道在这里会卡死；先把压缩流单独解开，再交给 tar。
+	if (process.platform === "win32" && archive.endsWith(".xz")) {
+		const plain = archive.slice(0, -3);
+		writeFileSync(plain, execFileSync("xz", ["-dc", archive], { maxBuffer: 1 << 30 }));
+		archive = plain;
+	}
+	execFileSync("tar", ["-xf", archive, "-C", into]);
 }
 
 /** Copies a file as a native library: dereferenced, executable. */
