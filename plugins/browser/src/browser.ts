@@ -4,8 +4,8 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import type { CdpConnection, CdpEvent } from "./cdp.ts";
 import { CdpSession } from "./cdp.ts";
-import { GUEST_RUNTIME, guestInfo } from "./guest.ts";
-import { closeBrowser, type FoundBrowser, type Launched, launchBrowser, locateBrowser } from "./chrome.ts";
+import { GUEST_RUNTIME, type Guest, guestInfo } from "./guest.ts";
+import { closeBrowser, type FoundBrowser, type Launched, launchBrowser, locateBrowser, stderrSummary } from "./chrome.ts";
 import { cftExecutable, cftPlatform, type InstallProgress, installChrome } from "./install.ts";
 import { MOD } from "./keys.ts";
 import type { BrowserSettings } from "./settings.ts";
@@ -81,6 +81,15 @@ export class BrowserCore implements TabHost {
 	private agentAbort: AbortController | undefined;
 	/** Tabs the next launch opens (restored session or a mode switch). */
 	private pendingUrls: { urls: string[]; active: number } | undefined;
+	/** The step a start is on, so a hang can name it instead of leaving the panel on "starting" forever. */
+	private stage = "准备";
+	/** Why the last page went away; the empty-browser state would otherwise be unexplainable. */
+	private lastTargetLoss: string | undefined;
+	/** When pages died on their own shortly after opening: a browser that keeps losing its page is not "starting". */
+	private earlyDeaths: number[] = [];
+	private reviving = false;
+	/** Pages run in the browser process: the phone's PRoot could not keep a renderer of its own alive. */
+	private inProcess = false;
 	private readonly deps: BrowserDeps;
 
 	constructor(deps: BrowserDeps) {
@@ -153,9 +162,12 @@ export class BrowserCore implements TabHost {
 			const ready = this.order.find((id) => this.tabs.get(id)?.ready);
 			if (ready) queueMicrotask(() => this.activate(ready));
 		}
+		// A running browser without any page looks exactly like "starting" to the app; give it one.
+		if (!this.starting) this.keepAlive();
 		return {
 			status: this.status,
 			...(this.error ? { error: this.error } : {}),
+			...(this.status === "starting" || (this.status === "running" && !this.tabs.size) ? { stage: this.stage } : {}),
 			mode: this.mode,
 			...(found ? { browser: { kind: found.kind, path: found.path, product: this.product } } : {}),
 			missing: !found,
@@ -210,42 +222,77 @@ export class BrowserCore implements TabHost {
 		}
 		this.status = "starting";
 		this.error = undefined;
+		this.lastTargetLoss = undefined;
+		this.earlyDeaths = [];
+		this.stage = "启动浏览器进程";
 		this.changed();
+		// A phone starts Chromium under PRoot slowly (first run: fonts, caches, a 200 MB binary), and a step that never
+		// answers used to leave the panel saying "starting" forever. Every launch therefore has a deadline that ends in
+		// a visible, logged error.
+		const deadline = guest ? 120_000 : 90_000;
+		let watchdog: NodeJS.Timeout | undefined;
 		try {
-			const launched = await launchBrowser(
-				{
-					executable: found.path,
-					profileDir: join(this.deps.dataDir, "profile"),
-					headless: this.mode === "headless",
-					...(guest ? { guest: { runner: guest.runner, cwd: this.deps.dataDir } } : process.env.PM_BROWSER_WS ? { transport: "ws" as const } : {}),
-					proxy: s.proxy,
-					lang: s.lang,
-					window: { width: this.view_.width, height: this.view_.height + 90 },
-					onExit: (code, stderr) => this.onExit(launched, code, stderr),
-				},
-				this.deps.dataDir,
-			);
-			this.launched = launched;
-			this.product = launched.product;
-			// Headless Chromium says so in its user agent; sites treat that as a bot. Only that word changes.
-			this.rawUa = launched.userAgent.replace("HeadlessChrome", "Chrome");
-			this.ua = launched.userAgent.includes("HeadlessChrome") ? launched.userAgent.replace("HeadlessChrome", "Chrome") : undefined;
-			launched.conn.on((e) => this.onEvent(e));
-			await mkdir(this.downloadDir(), { recursive: true });
-			await launched.conn.send("Browser.setDownloadBehavior", { behavior: "allowAndName", downloadPath: this.downloadDir(), eventsEnabled: true }).catch(() => {});
-			await launched.conn.send("Target.setDiscoverTargets", { discover: true });
-			await launched.conn.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
-			this.status = "running";
-			this.changed();
-			await this.waitFirstTab();
-			await this.restoreTabs();
-			this.updateScreencast();
+			await Promise.race([
+				this.launchAndAttach(found, guest),
+				new Promise<never>((_, reject) => {
+					watchdog = setTimeout(() => reject(new Error(`启动超时：卡在「${this.stage}」超过 ${Math.round(deadline / 1000)} 秒`)), deadline);
+				}),
+			]);
 		} catch (err) {
-			this.status = "error";
 			this.error = err instanceof Error ? err.message : String(err);
+			this.status = "error";
 			this.changed();
+			// Also in 设置 → 错误日志: a panel that missed the state event would otherwise keep spinning.
+			console.error(`[plugin:browser] 浏览器启动失败（${this.stage}）：${this.error}`);
 			throw new UserFacingError(`浏览器启动失败：${this.error}`);
+		} finally {
+			if (watchdog) clearTimeout(watchdog);
 		}
+	}
+
+	private async launchAndAttach(found: FoundBrowser, guest: Guest | undefined): Promise<void> {
+		const s = this.deps.settings();
+		// The process can die before launchBrowser returns (no libraries, a refused exec). The exit listener then runs
+		// while `launched` is still unset; the rejection from launchBrowser is what reports that case, so only deliver
+		// later exits to onExit.
+		let launched: Launched | undefined;
+		const started = await launchBrowser(
+			{
+				executable: found.path,
+				profileDir: join(this.deps.dataDir, "profile"),
+				headless: this.mode === "headless",
+				...(guest ? { guest: { runner: guest.runner, cwd: this.deps.dataDir } } : process.env.PM_BROWSER_WS ? { transport: "ws" as const } : {}),
+				...(this.inProcess ? { inProcess: true } : {}),
+				proxy: s.proxy,
+				lang: s.lang,
+				window: { width: this.view_.width, height: this.view_.height + 90 },
+				onExit: (code, stderr) => {
+					if (launched) this.onExit(launched, code, stderr);
+				},
+			},
+			this.deps.dataDir,
+			guest ? 60_000 : 30_000,
+		);
+		launched = started;
+		this.launched = started;
+		this.product = started.product;
+		// Headless Chromium says so in its user agent; sites treat that as a bot. Only that word changes.
+		this.rawUa = started.userAgent.replace("HeadlessChrome", "Chrome");
+		this.ua = started.userAgent.includes("HeadlessChrome") ? started.userAgent.replace("HeadlessChrome", "Chrome") : undefined;
+		started.conn.on((e) => this.onEvent(e));
+		this.stage = "准备下载目录";
+		await mkdir(this.downloadDir(), { recursive: true });
+		await started.conn.send("Browser.setDownloadBehavior", { behavior: "allowAndName", downloadPath: this.downloadDir(), eventsEnabled: true }).catch(() => {});
+		await started.conn.send("Target.setDiscoverTargets", { discover: true });
+		await started.conn.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+		this.status = "running";
+		this.stage = "打开第一个页面";
+		this.changed();
+		await this.waitFirstTab();
+		await this.restoreTabs();
+		if (this.tabs.size === 0) throw new Error(`浏览器没有打开任何页面${this.lastTargetLoss ? `（${this.lastTargetLoss}）` : ""}`);
+		this.stage = "完成";
+		this.updateScreencast();
 	}
 
 	private async waitFirstTab(): Promise<void> {
@@ -292,8 +339,9 @@ export class BrowserCore implements TabHost {
 			this.status = "stopped";
 		} else {
 			this.status = "error";
-			this.error = `浏览器意外退出（代码 ${code}）${stderr ? `：${stderr.trim().split("\n").slice(-2).join(" ").slice(0, 300)}` : ""}`;
-			this.deps.log(this.error);
+			const out = stderrSummary(stderr, 400);
+			this.error = `浏览器意外退出（代码 ${code}）${out ? `：${out}` : ""}`;
+			console.error(`[plugin:browser] ${this.error}`);
 		}
 		this.changed();
 	}
@@ -412,12 +460,19 @@ export class BrowserCore implements TabHost {
 				return;
 			case "Target.detachedFromTarget": {
 				const t = this.bySession.get(p.sessionId);
-				if (t) this.removeTab(t);
+				if (t) {
+					const reason = typeof p.reason === "string" && p.reason ? p.reason.slice(0, 200) : "";
+					this.lastTargetLoss = `页面 ${t.id} 断开${reason && reason !== "target_closed" ? `：${reason}` : ""}`;
+					this.removeTab(t);
+				}
 				return;
 			}
 			case "Target.targetDestroyed": {
 				const t = [...this.tabs.values()].find((x) => x.targetId === p.targetId);
-				if (t) this.removeTab(t);
+				if (t) {
+					this.lastTargetLoss = `页面 ${t.id} 已关闭`;
+					this.removeTab(t);
+				}
 				return;
 			}
 			case "Target.targetInfoChanged": {
@@ -491,7 +546,68 @@ export class BrowserCore implements TabHost {
 			const next = this.order[Math.min(idx, this.order.length - 1)];
 			if (next) this.activate(next);
 		}
+		this.keepAlive();
 		this.changed();
+	}
+
+	/**
+	 * A running browser always has one page, because the app draws "starting the browser" for a browser with no tabs
+	 * and never leaves that screen by itself. When the last page goes away on its own (a crashed renderer, a page
+	 * closing itself under PRoot), open a blank one again. Pages that keep dying within a minute are not a slow start:
+	 * the phone gets one relaunch with the pages in the browser process, and then an error instead of a loop.
+	 */
+	private keepAlive(): void {
+		if (this.starting || this.stopping || this.reviving || this.tabs.size > 0) return;
+		if (this.status !== "running" || !this.launched) return;
+		const now = Date.now();
+		this.earlyDeaths = this.earlyDeaths.filter((at) => now - at < 60_000);
+		// Chrome on the phone does not crash quietly: the renderer's own complaint is in its output.
+		const output = stderrSummary(this.launched.stderr());
+		const detail = [this.lastTargetLoss, output ? `浏览器输出：${output}` : ""].filter(Boolean).join("；");
+		if (this.earlyDeaths.length >= 3) {
+			// A page that cannot live in its own process may still work next to the browser's: the phone's PRoot does
+			// not always manage to start a renderer, so try one launch with everything in the browser process.
+			if (guestInfo() && !this.inProcess) {
+				this.inProcess = true;
+				this.earlyDeaths = [];
+				this.reviving = true;
+				console.warn(`[plugin:browser] 页面反复崩溃（${detail || "没有更多信息"}），改用单进程模式重启浏览器`);
+				void this.restartForFallback(detail).finally(() => {
+					this.reviving = false;
+					this.changed();
+				});
+				return;
+			}
+			this.status = "error";
+			this.error = `浏览器的页面反复崩溃${detail ? `（${detail}）` : ""}`;
+			console.error(`[plugin:browser] ${this.error}`);
+			this.changed();
+			return;
+		}
+		this.earlyDeaths.push(now);
+		this.reviving = true;
+		void this.newTab("about:blank")
+			.catch((err: unknown) => {
+				this.status = "error";
+				this.error = `浏览器无法打开页面：${err instanceof Error ? err.message : String(err)}${detail ? `（${detail}）` : ""}`;
+				console.error(`[plugin:browser] ${this.error}`);
+			})
+			.finally(() => {
+				this.reviving = false;
+				this.changed();
+			});
+	}
+
+	/** Stops the browser and starts it again in the current mode (used after page crashes, before giving up). */
+	private async restartForFallback(detail: string): Promise<void> {
+		try {
+			await this.stop();
+			await this.ensure();
+		} catch (err) {
+			this.status = "error";
+			this.error = `浏览器的页面反复崩溃${detail ? `（${detail}）` : ""}，单进程模式也没能启动：${err instanceof Error ? err.message : String(err)}`;
+			console.error(`[plugin:browser] ${this.error}`);
+		}
 	}
 
 	tab(id?: string): Tab {

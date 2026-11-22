@@ -165,9 +165,12 @@ export function StatusScreen({ state, startError, onStart, onSaveSettings }: { s
 	if (state.status === "starting" || (state.status === "running" && !state.tabs.length))
 		return (
 			<Center>
-				<div className="flex items-center gap-2 text-sm text-ink-400">
-					<LoaderCircle className="size-4 animate-spin" />
-					{t("starting")}
+				<div className="flex flex-col items-center gap-1 text-sm text-ink-400">
+					<div className="flex items-center gap-2">
+						<LoaderCircle className="size-4 animate-spin" />
+						{t("starting")}
+					</div>
+					{state.stage && <span className="text-xs text-ink-500">{state.stage}</span>}
 				</div>
 			</Center>
 		);

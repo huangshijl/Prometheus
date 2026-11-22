@@ -29,4 +29,15 @@ export function guestInfo(env: NodeJS.ProcessEnv = process.env): Guest | undefin
 }
 
 /** What Chromium needs on top of the usual flags to run under PRoot (no user namespaces, no GPU, small /dev/shm). */
-export const GUEST_ARGS = ["--no-sandbox", "--no-zygote", "--disable-gpu", "--disable-dev-shm-usage", "--disable-software-rasterizer", "--renderer-process-limit=2", "--disable-features=VizDisplayCompositor"];
+export const GUEST_ARGS = [
+	"--no-sandbox",
+	"--no-zygote",
+	// Crashpad is another program the browser would have to exec under PRoot; it is not needed in a headless browser.
+	"--disable-crash-reporter",
+	"--disable-breakpad",
+	"--disable-gpu",
+	"--disable-dev-shm-usage",
+	"--disable-software-rasterizer",
+	"--renderer-process-limit=2",
+	"--disable-features=VizDisplayCompositor",
+];

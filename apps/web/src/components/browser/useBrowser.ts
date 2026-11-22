@@ -72,6 +72,23 @@ export function useBrowser(onFrame: FrameSink, onEvent: EventSink) {
 		return () => clearTimeout(timer);
 	}, [orphan]);
 
+	// A start that hits a wall, or one state event that never arrives, used to leave the panel on "starting the
+	// browser…" forever. Ask the server directly while it is in that state, so a real error replaces the spinner.
+	const pending = !!state && (state.status === "starting" || (state.status === "running" && state.tabs.length === 0));
+	useEffect(() => {
+		if (!pending) return;
+		let alive = true;
+		const timer = setInterval(() => {
+			void browserCall<{ state: BrowserState }>("state").then((r) => {
+				if (alive) setState(r.state);
+			}, () => {});
+		}, 1500);
+		return () => {
+			alive = false;
+			clearInterval(timer);
+		};
+	}, [pending]);
+
 	return { state, settings, setSettings, startError, setStartError };
 }
 

@@ -61,6 +61,8 @@ export interface Viewport {
 export interface BrowserState {
 	status: "stopped" | "starting" | "running" | "error";
 	error?: string;
+	/** While starting: the step it is on, so a slow phone start is not a blank spinner. */
+	stage?: string;
 	mode: BrowserMode;
 	browser?: { kind: string; path: string; product: string };
 	/** No usable browser was found; the UI offers to download one. */

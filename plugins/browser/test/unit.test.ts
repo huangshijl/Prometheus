@@ -232,3 +232,30 @@ describe("phone support", () => {
 		expect(args).toEqual(expect.arrayContaining(["--no-sandbox", "--no-zygote", "--disable-gpu", "--disable-dev-shm-usage"]));
 	});
 });
+
+describe("browser output", () => {
+	it("finds the endpoint Chrome announces on stderr", async () => {
+		const { announcedEndpoint } = await import("../src/chrome.ts");
+		const url = "ws://127.0.0.1:45123/devtools/browser/0b0a8f8e-1c2d-4e5f-8a9b-0c1d2e3f4a5b";
+		expect(announcedEndpoint(`[1122/101010:ERROR:dbus/bus.cc] noise\nDevTools listening on ${url}\n`)).toBe(url);
+		expect(announcedEndpoint("nothing here")).toBeUndefined();
+	});
+
+	it("keeps the useful lines of a phone browser's stderr", async () => {
+		const { stderrSummary } = await import("../src/chrome.ts");
+		const text = [
+			"ERROR:dbus/bus.cc:405] Failed to connect to the bus",
+			"ERROR:base/files/file_path_watcher_inotify.cc:925] Failed to read /proc/sys/fs/inotify/max_user_watches",
+			"DevTools listening on ws://127.0.0.1:1/devtools/browser/x",
+			"ERROR:gpu/command_buffer_service.cc:512] Renderer process crashed",
+			"",
+		].join("\n");
+		const summary = stderrSummary(text);
+		expect(summary).toContain("Renderer process crashed");
+		expect(summary).not.toContain("dbus");
+		expect(summary).not.toContain("inotify");
+		expect(summary).not.toContain("DevTools listening");
+		expect(stderrSummary("")).toBe("");
+		expect(stderrSummary("ERROR:dbus/bus.cc:405] Failed to connect to the bus\nFloss manager service not available")).toBe("");
+	});
+});
