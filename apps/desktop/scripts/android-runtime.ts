@@ -832,6 +832,37 @@ function guestDnsSource(): string {
     super.onResume()
     // The network may have changed while the app was in the background; the guest re-reads the file per command.
     writeGuestDns()
+    watchGuestDns()
+  }
+
+  private var dnsCallback: android.net.ConnectivityManager.NetworkCallback? = null
+
+  /**
+   * The network can also change while the app is in the foreground (Wi-Fi off, mobile data on). onResume alone would miss
+   * it, and the guest's long-lived processes (the built-in browser) would keep the old resolvers; publish on every
+   * change of the default network instead. The server follows dns.txt and rewrites the rootfs' resolv.conf.
+   */
+  private fun watchGuestDns() {
+    if (dnsCallback != null) return
+    try {
+      val cm = getSystemService(android.net.ConnectivityManager::class.java) ?: return
+      val callback = object : android.net.ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: android.net.Network) {
+          writeGuestDns()
+        }
+
+        override fun onLost(network: android.net.Network) {
+          writeGuestDns()
+        }
+
+        override fun onLinkPropertiesChanged(network: android.net.Network, linkProperties: android.net.LinkProperties) {
+          writeGuestDns()
+        }
+      }
+      dnsCallback = callback
+      cm.registerDefaultNetworkCallback(callback)
+    } catch (_: Throwable) {
+    }
   }
 
   // Publish the gateway and the resolvers where the \`guestrun\` shim reads them: line 1 is the gateway (empty when

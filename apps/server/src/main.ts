@@ -7,6 +7,7 @@ import { builtinPlugins } from "@prometheus/builtin-plugins";
 import { DEFAULT_LAN_PORT, PrometheusHost } from "@prometheus/core";
 import { AppError, type ClientFrame, encodeBinaryFrame, encodeError, type NetworkPatch, type NetworkStatus, PROTOCOL_VERSION, type RuntimeEnv, type ServerFrame } from "@prometheus/protocol";
 import { WebSocket, WebSocketServer } from "ws";
+import { watchGuestDns } from "./guest-dns.ts";
 import {
 	type Access,
 	accessFor,
@@ -554,6 +555,9 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage, kind: Kind) => {
 		}
 	}
 });
+
+// Android local mode: keep the PRoot guest's resolver in step with the phone's current network (Wi-Fi ⇄ mobile data).
+watchGuestDns();
 
 // A stray error from a plugin or an agent must not take the whole server (and every connection) down.
 process.on("uncaughtException", (err) => console.error("[prometheus] uncaughtException", err));
