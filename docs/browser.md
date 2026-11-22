@@ -94,7 +94,7 @@ src/
 ### 4.2 画面
 
 - 只给**当前标签**开 `Page.startScreencast`（JPEG，画质与帧率可调，默认 70 / 30fps），通过推迟 `screencastFrameAck` 限制帧率。
-- headless 下视口跟随面板尺寸（`Emulation.setDeviceMetricsOverride`，含 DPR），总像素封顶 2560×1600。
+- headless 下视口跟随面板尺寸（`Emulation.setDeviceMetricsOverride`，含 DPR），总像素封顶 2560×1600。但 emulation 的 DPR 只影响布局，**screencast 仍按 CSS 像素截帧**：手机 2~3 倍屏上等于把 390px 的图放大 2~3 倍，看着就是糊的。所以启动时按面板上报的 DPR 加 `--force-device-scale-factor=<dpr>`（仅 headless），让合成器按设备像素出帧；Agent 先打开浏览器、面板后报尺寸时，收到真实 DPR 后重启一次。JPEG 画质/帧率仍由设置里的「画质」「帧率」控制。
 - Screencast 只在画面变化时出帧，新观众加入时立刻补发最后一帧；静止页面先用 `captureScreenshot` 出第一帧。
 
 ### 4.3 headless 画不出来的东西，由应用画

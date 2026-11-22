@@ -92,6 +92,18 @@ describe("launch arguments", () => {
 	});
 });
 
+describe("pixel ratio", () => {
+	const base = { executable: "chrome", profileDir: "/p", proxy: "", lang: "en-US", window: { width: 800, height: 600 } };
+	it("bakes the viewer's ratio in so the screencast is not captured at CSS size", async () => {
+		const { launchArgs } = await import("../src/chrome.ts");
+		expect(launchArgs({ ...base, headless: true, scale: 2.75 })).toContain("--force-device-scale-factor=2.75");
+		expect(launchArgs({ ...base, headless: true, scale: 1 })).not.toContain("--force-device-scale-factor=1");
+		expect(launchArgs({ ...base, headless: false, scale: 2 })).not.toContain("--force-device-scale-factor=2");
+		// chrome-headless-shell (the phone) is headless without --headless=new and still needs the ratio.
+		expect(launchArgs({ ...base, headless: true, scale: 3, guest: { runner: "/r", cwd: "/c" } })).toContain("--force-device-scale-factor=3");
+	});
+});
+
 describe("accessibility tree", () => {
 	const v = (value: unknown) => ({ type: "string", value });
 	const nodes: AXNode[] = [

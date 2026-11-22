@@ -71,6 +71,11 @@ export interface LaunchOptions {
 	proxy: string;
 	lang: string;
 	window: { width: number; height: number };
+	/**
+	 * Pixel ratio to render at. Headless Chromium captures screencast frames at CSS size unless the ratio is baked in
+	 * at launch, which is what makes a 2x/3x phone screen look blurry.
+	 */
+	scale?: number;
 	/** Run inside the phone's PRoot rootfs through the runner (see guest.ts); implies the WebSocket transport. */
 	guest?: { runner: string; cwd: string };
 	/**
@@ -120,6 +125,9 @@ export function launchArgs(o: LaunchOptions): string[] {
 	];
 	// chrome-headless-shell (the phone's browser) is headless by itself and does not take --headless=new.
 	if (o.headless) args.push(...(o.guest ? ["--mute-audio"] : ["--headless=new", "--mute-audio"]));
+	// Screencast frames come out at CSS size when the device scale factor is only emulated; a launch-time factor makes
+	// the compositor render (and capture) at the viewer's real pixel density.
+	if (o.headless && o.scale && o.scale > 1.01) args.push(`--force-device-scale-factor=${Math.min(o.scale, 4)}`);
 	if (o.guest) args.push(...GUEST_ARGS);
 	if (o.inProcess) args.push("--single-process");
 	if (o.proxy) args.push(`--proxy-server=${o.proxy}`);

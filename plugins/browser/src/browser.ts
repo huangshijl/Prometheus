@@ -90,6 +90,12 @@ export class BrowserCore implements TabHost {
 	private reviving = false;
 	/** Pages run in the browser process: the phone's PRoot could not keep a renderer of its own alive. */
 	private inProcess = false;
+	/** DPR baked in at launch; the screencast captures at CSS size without it (see LaunchOptions.scale). */
+	private launchScale = 1;
+	/** The browser was started by an agent before any panel reported its size: the first real report may need a restart. */
+	private launchedWithoutViewport = false;
+	private gotViewport = false;
+	private readonly viewportWaiters: (() => void)[] = [];
 	private readonly deps: BrowserDeps;
 
 	constructor(deps: BrowserDeps) {
@@ -210,6 +216,17 @@ export class BrowserCore implements TabHost {
 		const s = this.deps.settings();
 		if (UNSUPPORTED_HERE && !s.executablePath) throw new UserFacingError(UNSUPPORTED_HERE);
 		const guest = guestInfo();
+		// The panel reports its pixel ratio right after mounting (one layout + a 120 ms debounce); launching before that
+		// would bake in 1× and look blurry. Wait for it, but never for long: an agent-only start has no viewer to wait for.
+		if (!this.gotViewport && this.deps.watchers() > 0) {
+			await new Promise<void>((resolve) => {
+				const timer = setTimeout(resolve, 1000);
+				this.viewportWaiters.push(() => {
+					clearTimeout(timer);
+					resolve();
+				});
+			});
+		}
 		// The phone's browser has no window to show.
 		this.mode = guest ? "headless" : s.mode;
 		const found = this.locate();
@@ -252,6 +269,8 @@ export class BrowserCore implements TabHost {
 
 	private async launchAndAttach(found: FoundBrowser, guest: Guest | undefined): Promise<void> {
 		const s = this.deps.settings();
+		this.launchScale = this.view_.dpr;
+		this.launchedWithoutViewport = !this.gotViewport;
 		// The process can die before launchBrowser returns (no libraries, a refused exec). The exit listener then runs
 		// while `launched` is still unset; the rejection from launchBrowser is what reports that case, so only deliver
 		// later exits to onExit.
@@ -266,6 +285,7 @@ export class BrowserCore implements TabHost {
 				proxy: s.proxy,
 				lang: s.lang,
 				window: { width: this.view_.width, height: this.view_.height + 90 },
+				scale: this.view_.dpr,
 				onExit: (code, stderr) => {
 					if (launched) this.onExit(launched, code, stderr);
 				},
@@ -693,9 +713,20 @@ export class BrowserCore implements TabHost {
 
 	async setViewport(v: Viewport): Promise<void> {
 		const next = { width: Math.round(clamp(v.width, 200, 3840)), height: Math.round(clamp(v.height, 150, 2400)), dpr: clamp(Math.round(v.dpr * 100) / 100, 1, 3), mobile: !!v.mobile };
+		this.gotViewport = true;
+		for (const done of this.viewportWaiters.splice(0)) done();
 		if (next.width === this.view_.width && next.height === this.view_.height && next.dpr === this.view_.dpr && !next.mobile === !this.view_.mobile) return;
 		this.view_ = next;
-		if (this.running && this.headless) await Promise.all(this.allTabs().map((t) => t.applyViewport()));
+		if (this.running && this.headless) {
+			// The ratio is fixed at launch, so a viewer on a screen with another density needs a browser started for it.
+			// Only once: after that a different ratio (browser zoom on the desktop) just re-scales the page.
+			if ((guestInfo() || this.launchedWithoutViewport) && Math.abs(next.dpr - this.launchScale) > 0.05) {
+				this.launchScale = next.dpr;
+				await this.setMode("headless", true).catch(() => {});
+				return;
+			}
+			await Promise.all(this.allTabs().map((t) => t.applyViewport()));
+		}
 		this.changed();
 	}
 
